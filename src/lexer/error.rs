@@ -16,6 +16,15 @@ pub enum LexError {
         span: Span,
         file: String,
     },
+    UnterminatedString {
+        span: Span,
+        file: String,
+    },
+    InvalidEscape {
+        ch: char,
+        span: Span,
+        file: String,
+    },
 }
 
 impl LexError {
@@ -24,6 +33,8 @@ impl LexError {
             Self::UnexpectedChar { span, .. }     => span,
             Self::UnterminatedComment { span, .. } => span,
             Self::NumberOverflow { span, .. }      => span,
+            Self::UnterminatedString { span, .. }  => span,
+            Self::InvalidEscape { span, .. }       => span,
         }
     }
 
@@ -32,6 +43,8 @@ impl LexError {
             Self::UnexpectedChar { file, .. }     => file,
             Self::UnterminatedComment { file, .. } => file,
             Self::NumberOverflow { file, .. }      => file,
+            Self::UnterminatedString { file, .. }  => file,
+            Self::InvalidEscape { file, .. }       => file,
         }
     }
 }
@@ -45,6 +58,10 @@ impl std::fmt::Display for LexError {
                 write!(f, "unterminated comment at {}:{}", span.line, span.col),
             Self::NumberOverflow { raw, span, .. } =>
                 write!(f, "number '{}' overflows i64 at {}:{}", raw, span.line, span.col),
+            Self::UnterminatedString { span, .. } =>
+                write!(f, "unterminated string at {}:{}", span.line, span.col),
+            Self::InvalidEscape { ch, span, .. } =>
+                write!(f, "unknown escape sequence '\\{}' at {}:{}", ch, span.line, span.col),
         }
     }
 }

@@ -278,6 +278,128 @@ impl Lexer {
         Ok(self.make_token(TokenKind::IntLiteral(val), span))
     }
 
+    fn lex_string(&mut self) -> Result<Token, LexError> {
+        let start = self.current_pos();
+        let start_line = self.line;
+        let start_col = self.col;
+
+        self.advance();
+
+        let mut value = String::with_capacity(32);
+
+        loop {
+            if self.is_at_end() || self.current() == '\n' {
+                return Err(LexError::UnterminatedString {
+                    span: Span::new(start, self.byte_pos, start_line, start_col),
+                    file: self.file.clone(),
+                });
+            }
+
+            if self.current() == '"' {
+                self.advance();
+                break;
+            }
+
+            if self.current() == '\\' {
+                self.advance();
+                let escaped = self.lex_escape_sequence(start, start_line, start_col)?;
+                value.push(escaped);
+                continue;
+            }
+
+            value.push(self.advance());
+        }
+
+        let span = Span::new(start, self.byte_pos, start_line, start_col);
+        Ok(self.make_token(TokenKind::StringLiteral(value), span))
+    }
+
+    fn lex_escape_sequence(
+        &mut self,
+        string_start: usize,
+        string_line: usize,
+        string_col: usize,
+    ) -> Result<char, LexError> {
+        if self.is_at_end() {
+            return Err(LexError::UnterminatedString {
+                span: Span::new(string_start, self.byte_pos, string_line, string_col),
+                file: self.file.clone(),
+            });
+        }
+
+        let escape_col = self.col;
+        let escape_line = self.line;
+        let ch = self.advance();
+
+        match ch {
+            'n'  => Ok('\n'),
+            't'  => Ok('\t'),
+            'r'  => Ok('\r'),
+            '\\' => Ok('\\'),
+            '"'  => Ok('"'),
+            '\'' => Ok('\''),
+            '0'  => Ok('\0'),
+            'u'  => self.lex_unicode_escape(string_start, string_line, string_col),
+            other => Err(LexError::InvalidEscape {
+                ch: other,
+                span: Span::new(
+                    self.byte_pos.saturating_sub(2),
+                    self.byte_pos,
+                    escape_line,
+                    escape_col.saturating_sub(1),
+                ),
+                file: self.file.clone(),
+            }),
+        }
+    }
+
+    fn lex_unicode_escape(
+        &mut self,
+        string_start: usize,
+        string_line: usize,
+        string_col: usize,
+    ) -> Result<char, LexError> {
+        if !self.advance_if('{') {
+            return Err(LexError::InvalidEscape {
+                ch: 'u',
+                span: Span::new(string_start, self.byte_pos, string_line, string_col),
+                file: self.file.clone(),
+            });
+        }
+
+        let mut hex = String::with_capacity(6);
+        while !self.is_at_end() && self.current() != '}' {
+            if self.current().is_ascii_hexdigit() {
+                hex.push(self.advance());
+            } else {
+                return Err(LexError::InvalidEscape {
+                    ch: self.current(),
+                    span: Span::new(string_start, self.byte_pos, string_line, string_col),
+                    file: self.file.clone(),
+                });
+            }
+        }
+
+        if !self.advance_if('}') {
+            return Err(LexError::UnterminatedString {
+                span: Span::new(string_start, self.byte_pos, string_line, string_col),
+                file: self.file.clone(),
+            });
+        }
+
+        let codepoint = u32::from_str_radix(&hex, 16).map_err(|_| LexError::InvalidEscape {
+            ch: 'u',
+            span: Span::new(string_start, self.byte_pos, string_line, string_col),
+            file: self.file.clone(),
+        })?;
+
+        char::from_u32(codepoint).ok_or_else(|| LexError::InvalidEscape {
+            ch: 'u',
+            span: Span::new(string_start, self.byte_pos, string_line, string_col),
+            file: self.file.clone(),
+        })
+    }
+
     fn newline_is_significant(&self, last_token: Option<&TokenKind>) -> bool {
         match last_token {
             None => false,
@@ -537,5 +659,102 @@ mod number_tests {
         assert_eq!(tok.span.line, 1);
         assert_eq!(tok.span.col, 1);
         assert_eq!(tok.span.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod string_tests {
+    use super::*;
+
+    fn lex_str(src: &str) -> Result<Token, LexError> {
+        let mut lexer = Lexer::new(src, "test.lyz");
+        lexer.lex_string()
+    }
+
+    fn unwrap_str(tok: Token) -> String {
+        match tok.kind {
+            TokenKind::StringLiteral(s) => s,
+            other => panic!("Expected StringLiteral, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_simple_string() {
+        let s = unwrap_str(lex_str("\"hello\"").unwrap());
+        assert_eq!(s, "hello");
+    }
+
+    #[test]
+    fn test_empty_string() {
+        let s = unwrap_str(lex_str("\"\"").unwrap());
+        assert_eq!(s, "");
+    }
+
+    #[test]
+    fn test_escape_newline() {
+        let s = unwrap_str(lex_str("\"line1\\nline2\"").unwrap());
+        assert_eq!(s, "line1\nline2");
+    }
+
+    #[test]
+    fn test_escape_tab() {
+        let s = unwrap_str(lex_str("\"a\\tb\"").unwrap());
+        assert_eq!(s, "a\tb");
+    }
+
+    #[test]
+    fn test_escape_backslash() {
+        let s = unwrap_str(lex_str("\"path\\\\to\\\\file\"").unwrap());
+        assert_eq!(s, "path\\to\\file");
+    }
+
+    #[test]
+    fn test_escape_quote() {
+        let s = unwrap_str(lex_str("\"say \\\"hi\\\"\"").unwrap());
+        assert_eq!(s, "say \"hi\"");
+    }
+
+    #[test]
+    fn test_unicode_escape() {
+        let s = unwrap_str(lex_str("\"\\u{0041}\"").unwrap());
+        assert_eq!(s, "A");
+    }
+
+    #[test]
+    fn test_emoji_unicode_escape() {
+        let s = unwrap_str(lex_str("\"\\u{1F600}\"").unwrap());
+        assert_eq!(s, "\u{1F600}");
+    }
+
+    #[test]
+    fn test_unterminated_string() {
+        let result = lex_str("\"never closed");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            LexError::UnterminatedString { .. } => {}
+            e => panic!("Expected UnterminatedString, got {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_invalid_escape() {
+        let result = lex_str("\"\\q\"");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            LexError::InvalidEscape { ch: 'q', .. } => {}
+            e => panic!("Expected InvalidEscape('q'), got {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_string_with_utf8_content() {
+        let s = unwrap_str(lex_str("\"\u{0645}\u{0631}\u{062D}\u{0628}\u{0627}\"").unwrap());
+        assert_eq!(s, "\u{0645}\u{0631}\u{062D}\u{0628}\u{0627}");
+    }
+
+    #[test]
+    fn test_span_covers_full_string_including_quotes() {
+        let tok = lex_str("\"hi\"").unwrap();
+        assert_eq!(tok.span.len(), 4);
     }
 }
