@@ -163,6 +163,121 @@ impl Lexer {
         Ok(skipped)
     }
 
+    fn lex_number(&mut self) -> Result<Token, LexError> {
+        let start = self.current_pos();
+        let start_col = self.col;
+        let start_line = self.line;
+
+        if self.current() == '0' {
+            match self.peek() {
+                'x' | 'X' => return self.lex_hex(start, start_line, start_col),
+                'b' | 'B' => return self.lex_binary(start, start_line, start_col),
+                'o' | 'O' => return self.lex_octal(start, start_line, start_col),
+                _ => {}
+            }
+        }
+
+        let mut raw = String::with_capacity(16);
+        self.collect_decimal_digits(&mut raw);
+
+        if self.current() == '.' && Self::is_digit(self.peek()) {
+            raw.push('.');
+            self.advance();
+            self.collect_decimal_digits(&mut raw);
+
+            if matches!(self.current(), 'e' | 'E') {
+                raw.push('e');
+                self.advance();
+                if matches!(self.current(), '+' | '-') {
+                    raw.push(self.advance());
+                }
+                self.collect_decimal_digits(&mut raw);
+            }
+
+            let span = Span::new(start, self.byte_pos, start_line, start_col);
+            let val: f64 = raw.parse().map_err(|_| LexError::NumberOverflow {
+                raw: raw.clone(),
+                span,
+                file: self.file.clone(),
+            })?;
+            return Ok(self.make_token(TokenKind::FloatLiteral(val), span));
+        }
+
+        let span = Span::new(start, self.byte_pos, start_line, start_col);
+        let val: i64 = raw.parse().map_err(|_| LexError::NumberOverflow {
+            raw: raw.clone(),
+            span,
+            file: self.file.clone(),
+        })?;
+        Ok(self.make_token(TokenKind::IntLiteral(val), span))
+    }
+
+    fn collect_decimal_digits(&mut self, buf: &mut String) {
+        while !self.is_at_end() && (Self::is_digit(self.current()) || self.current() == '_') {
+            if self.current() != '_' {
+                buf.push(self.current());
+            }
+            self.advance();
+        }
+    }
+
+    fn lex_hex(&mut self, start: usize, line: usize, col: usize) -> Result<Token, LexError> {
+        self.advance();
+        self.advance();
+
+        let mut raw = String::with_capacity(8);
+        while !self.is_at_end() && (self.current().is_ascii_hexdigit() || self.current() == '_') {
+            if self.current() != '_' { raw.push(self.current()); }
+            self.advance();
+        }
+
+        let span = Span::new(start, self.byte_pos, line, col);
+        let val = i64::from_str_radix(&raw, 16).map_err(|_| LexError::NumberOverflow {
+            raw: format!("0x{}", raw),
+            span,
+            file: self.file.clone(),
+        })?;
+        Ok(self.make_token(TokenKind::IntLiteral(val), span))
+    }
+
+    fn lex_binary(&mut self, start: usize, line: usize, col: usize) -> Result<Token, LexError> {
+        self.advance();
+        self.advance();
+
+        let mut raw = String::with_capacity(8);
+        while !self.is_at_end() && matches!(self.current(), '0' | '1' | '_') {
+            if self.current() != '_' { raw.push(self.current()); }
+            self.advance();
+        }
+
+        let span = Span::new(start, self.byte_pos, line, col);
+        let val = i64::from_str_radix(&raw, 2).map_err(|_| LexError::NumberOverflow {
+            raw: format!("0b{}", raw),
+            span,
+            file: self.file.clone(),
+        })?;
+        Ok(self.make_token(TokenKind::IntLiteral(val), span))
+    }
+
+    fn lex_octal(&mut self, start: usize, line: usize, col: usize) -> Result<Token, LexError> {
+        self.advance();
+        self.advance();
+
+        let mut raw = String::with_capacity(8);
+        while !self.is_at_end() && (matches!(self.current(), '0'..='7') || self.current() == '_') {
+            if self.current() != '_' { raw.push(self.current()); }
+            self.advance();
+        }
+
+        let span = Span::new(start, self.byte_pos, line, col);
+        let val = i64::from_str_radix(&raw, 8).map_err(|_| LexError::NumberOverflow {
+            raw: format!("0o{}", raw),
+            span,
+            file: self.file.clone(),
+        })?;
+        Ok(self.make_token(TokenKind::IntLiteral(val), span))
+    }
+
     fn newline_is_significant(&self, last_token: Option<&TokenKind>) -> bool {
         match last_token {
             None => false,
@@ -340,5 +455,87 @@ mod whitespace_tests {
         lexer.skip_comments().unwrap();
         assert_eq!(lexer.line, 3);
         assert_eq!(lexer.current(), 'x');
+    }
+}
+
+#[cfg(test)]
+mod number_tests {
+    use super::*;
+
+    fn lex_one(src: &str) -> Result<Token, LexError> {
+        let mut lexer = Lexer::new(src, "test.lyz");
+        lexer.lex_number()
+    }
+
+    #[test]
+    fn test_simple_integer() {
+        let tok = lex_one("42").unwrap();
+        assert_eq!(tok.kind, TokenKind::IntLiteral(42));
+    }
+
+    #[test]
+    fn test_zero() {
+        let tok = lex_one("0").unwrap();
+        assert_eq!(tok.kind, TokenKind::IntLiteral(0));
+    }
+
+    #[test]
+    fn test_large_integer() {
+        let tok = lex_one("9223372036854775807").unwrap();
+        assert_eq!(tok.kind, TokenKind::IntLiteral(i64::MAX));
+    }
+
+    #[test]
+    fn test_integer_with_underscores() {
+        let tok = lex_one("1_000_000").unwrap();
+        assert_eq!(tok.kind, TokenKind::IntLiteral(1_000_000));
+    }
+
+    #[test]
+    fn test_float() {
+        let tok = lex_one("3.14").unwrap();
+        assert_eq!(tok.kind, TokenKind::FloatLiteral(3.14));
+    }
+
+    #[test]
+    fn test_float_scientific() {
+        let tok = lex_one("1.5e10").unwrap();
+        assert_eq!(tok.kind, TokenKind::FloatLiteral(1.5e10));
+    }
+
+    #[test]
+    fn test_hex() {
+        let tok = lex_one("0xFF").unwrap();
+        assert_eq!(tok.kind, TokenKind::IntLiteral(255));
+    }
+
+    #[test]
+    fn test_binary() {
+        let tok = lex_one("0b1010").unwrap();
+        assert_eq!(tok.kind, TokenKind::IntLiteral(10));
+    }
+
+    #[test]
+    fn test_octal() {
+        let tok = lex_one("0o17").unwrap();
+        assert_eq!(tok.kind, TokenKind::IntLiteral(15));
+    }
+
+    #[test]
+    fn test_integer_overflow_error() {
+        let result = lex_one("99999999999999999999999999");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            LexError::NumberOverflow { .. } => {}
+            other => panic!("Expected NumberOverflow, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_span_is_correct() {
+        let tok = lex_one("123").unwrap();
+        assert_eq!(tok.span.line, 1);
+        assert_eq!(tok.span.col, 1);
+        assert_eq!(tok.span.len(), 3);
     }
 }
