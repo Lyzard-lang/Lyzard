@@ -7,6 +7,26 @@ pub enum LexError {
         span: Span,
         file: String,
     },
+    UnterminatedComment {
+        span: Span,
+        file: String,
+    },
+}
+
+impl LexError {
+    pub fn span(&self) -> &Span {
+        match self {
+            Self::UnexpectedChar { span, .. }    => span,
+            Self::UnterminatedComment { span, .. } => span,
+        }
+    }
+
+    pub fn file(&self) -> &str {
+        match self {
+            Self::UnexpectedChar { file, .. }    => file,
+            Self::UnterminatedComment { file, .. } => file,
+        }
+    }
 }
 
 impl std::fmt::Display for LexError {
@@ -14,6 +34,8 @@ impl std::fmt::Display for LexError {
         match self {
             Self::UnexpectedChar { ch, span, .. } =>
                 write!(f, "unexpected character '{}' at {}:{}", ch, span.line, span.col),
+            Self::UnterminatedComment { span, .. } =>
+                write!(f, "unterminated comment at {}:{}", span.line, span.col),
         }
     }
 }
