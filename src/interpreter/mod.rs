@@ -457,7 +457,13 @@ impl Interpreter {
             _ => {}
         }
 
-        let method_name = format!("{}_{}", obj.type_name(), method);
+        // User-defined methods are named `<type>_<method>`; for structs the
+        // type part is the struct's own name.
+        let type_base = match &obj {
+            Value::Struct(name, _) => name.clone(),
+            other => other.type_name().to_string(),
+        };
+        let method_name = format!("{type_base}_{method}");
         if let Some(fn_val) = self.env.lookup(&method_name).cloned() {
             return self.call_function(fn_val, vec![obj], span);
         }
@@ -563,6 +569,7 @@ impl Interpreter {
                     if r.is_signal() {
                         match r {
                             Value::Break => break,
+                            Value::Continue => continue,
                             signal => {
                                 result = signal;
                                 break;
@@ -587,6 +594,7 @@ impl Interpreter {
                             if r.is_signal() {
                                 match r {
                                     Value::Break => break,
+                                    Value::Continue => continue,
                                     signal => {
                                         result = signal;
                                         break;
@@ -606,6 +614,7 @@ impl Interpreter {
                             if r.is_signal() {
                                 match r {
                                     Value::Break => break,
+                                    Value::Continue => continue,
                                     signal => {
                                         result = signal;
                                         break;
@@ -632,6 +641,7 @@ impl Interpreter {
                     if r.is_signal() {
                         match r {
                             Value::Break => break,
+                            Value::Continue => continue,
                             signal => {
                                 result = signal;
                                 break;

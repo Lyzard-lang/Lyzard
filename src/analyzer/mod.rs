@@ -128,13 +128,26 @@ impl Analyzer {
         let builtins: &[(&str, usize)] = &[
             ("print", 1),
             ("println", 1),
+            ("printErr", 1),
             ("readLine", 0),
             ("len", 1),
             ("parseInt", 1),
             ("parseFloat", 1),
-            ("panic", 1),
+            ("toString", 1),
+            ("range", 2),
             ("assert", 1),
-            ("typeof", 1),
+            ("panic", 1),
+            ("typeOf", 1),
+            ("push", 2),
+            ("pop", 1),
+            ("first", 1),
+            ("last", 1),
+            ("contains", 2),
+            ("toInt", 1),
+            ("toFloat", 1),
+            ("abs", 1),
+            ("min", 2),
+            ("max", 2),
         ];
 
         for (name, param_count) in builtins {
