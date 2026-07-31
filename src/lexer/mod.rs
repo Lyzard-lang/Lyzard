@@ -419,6 +419,102 @@ impl Lexer {
             ),
         }
     }
+
+    // ════════════════════════════════════════
+    //   CHAR LITERAL LEXING
+    // ════════════════════════════════════════
+
+    fn lex_char(&mut self) -> Result<Token, LexError> {
+        let start = self.current_pos();
+        let start_line = self.line;
+        let start_col = self.col;
+
+        self.advance(); // consume opening '
+
+        if self.is_at_end() || self.current() == '\n' {
+            return Err(LexError::UnterminatedChar {
+                span: Span::new(start, self.byte_pos, start_line, start_col),
+                file: self.file.clone(),
+            });
+        }
+
+        let ch = if self.current() == '\\' {
+            self.advance(); // consume backslash
+            self.lex_escape_sequence(start, start_line, start_col)?
+        } else {
+            self.advance()
+        };
+
+        if self.is_at_end() || self.current() != '\'' {
+            return Err(LexError::InvalidCharLiteral {
+                content: ch.to_string(),
+                span: Span::new(start, self.byte_pos, start_line, start_col),
+                file: self.file.clone(),
+            });
+        }
+
+        self.advance(); // consume closing '
+        let span = Span::new(start, self.byte_pos, start_line, start_col);
+        Ok(self.make_token(TokenKind::CharLiteral(ch), span))
+    }
+
+    // ════════════════════════════════════════
+    //   IDENTIFIER AND KEYWORD LEXING
+    // ════════════════════════════════════════
+
+    fn lex_identifier(&mut self) -> Result<Token, LexError> {
+        let start = self.current_pos();
+        let start_line = self.line;
+        let start_col = self.col;
+
+        let mut name = String::with_capacity(16);
+
+        while !self.is_at_end() && Self::is_alphanumeric(self.current()) {
+            name.push(self.advance());
+        }
+
+        let kind = Self::keyword_or_identifier(name);
+        let span = Span::new(start, self.byte_pos, start_line, start_col);
+        Ok(self.make_token(kind, span))
+    }
+
+    /// Check if a name is a keyword. If so, return the keyword token.
+    /// Otherwise, return an Identifier token.
+    fn keyword_or_identifier(name: String) -> TokenKind {
+        match name.as_str() {
+            "let"      => TokenKind::Let,
+            "mut"      => TokenKind::Mut,
+            "fn"       => TokenKind::Fn,
+            "return"   => TokenKind::Return,
+            "if"       => TokenKind::If,
+            "else"     => TokenKind::Else,
+            "while"    => TokenKind::While,
+            "for"      => TokenKind::For,
+            "in"       => TokenKind::In,
+            "break"    => TokenKind::Break,
+            "continue" => TokenKind::Continue,
+            "loop"     => TokenKind::Loop,
+            "struct"   => TokenKind::Struct,
+            "impl"     => TokenKind::Impl,
+            "enum"     => TokenKind::Enum,
+            "match"    => TokenKind::Match,
+            "pub"      => TokenKind::Pub,
+            "import"   => TokenKind::Import,
+            "module"   => TokenKind::Module,
+            "spawn"    => TokenKind::Spawn,
+            "select"   => TokenKind::Select,
+            "null"     => TokenKind::Null,
+            "true"     => TokenKind::BoolLiteral(true),
+            "false"    => TokenKind::BoolLiteral(false),
+            "int"      => TokenKind::IntType,
+            "float"    => TokenKind::FloatType,
+            "bool"     => TokenKind::BoolType,
+            "str"      => TokenKind::StrType,
+            "char"     => TokenKind::CharType,
+            "void"     => TokenKind::VoidType,
+            _          => TokenKind::Identifier(name),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -756,5 +852,83 @@ mod string_tests {
     fn test_span_covers_full_string_including_quotes() {
         let tok = lex_str("\"hi\"").unwrap();
         assert_eq!(tok.span.len(), 4);
+    }
+}
+
+#[cfg(test)]
+mod char_ident_tests {
+    use super::*;
+
+    #[test]
+    fn test_char_literal_simple() {
+        let mut l = Lexer::new("'a'", "test.lyz");
+        let tok = l.lex_char().unwrap();
+        assert_eq!(tok.kind, TokenKind::CharLiteral('a'));
+    }
+
+    #[test]
+    fn test_char_literal_escape() {
+        let mut l = Lexer::new("'\\n'", "test.lyz");
+        let tok = l.lex_char().unwrap();
+        assert_eq!(tok.kind, TokenKind::CharLiteral('\n'));
+    }
+
+    #[test]
+    fn test_char_literal_too_many_chars() {
+        let mut l = Lexer::new("'ab'", "test.lyz");
+        assert!(l.lex_char().is_err());
+    }
+
+    #[test]
+    fn test_keyword_let() {
+        let mut l = Lexer::new("let", "test.lyz");
+        let tok = l.lex_identifier().unwrap();
+        assert_eq!(tok.kind, TokenKind::Let);
+    }
+
+    #[test]
+    fn test_keyword_fn() {
+        let mut l = Lexer::new("fn", "test.lyz");
+        let tok = l.lex_identifier().unwrap();
+        assert_eq!(tok.kind, TokenKind::Fn);
+    }
+
+    #[test]
+    fn test_identifier_not_keyword() {
+        let mut l = Lexer::new("myVariable", "test.lyz");
+        let tok = l.lex_identifier().unwrap();
+        assert_eq!(tok.kind, TokenKind::Identifier("myVariable".to_string()));
+    }
+
+    #[test]
+    fn test_identifier_underscore_prefix() {
+        let mut l = Lexer::new("_privateVar", "test.lyz");
+        let tok = l.lex_identifier().unwrap();
+        assert_eq!(tok.kind, TokenKind::Identifier("_privateVar".to_string()));
+    }
+
+    #[test]
+    fn test_bool_true_false() {
+        let mut l = Lexer::new("true", "test.lyz");
+        assert_eq!(l.lex_identifier().unwrap().kind, TokenKind::BoolLiteral(true));
+        let mut l = Lexer::new("false", "test.lyz");
+        assert_eq!(l.lex_identifier().unwrap().kind, TokenKind::BoolLiteral(false));
+    }
+
+    #[test]
+    fn test_all_keywords_recognized() {
+        let keywords = [
+            ("let", TokenKind::Let), ("mut", TokenKind::Mut),
+            ("fn", TokenKind::Fn), ("return", TokenKind::Return),
+            ("if", TokenKind::If), ("else", TokenKind::Else),
+            ("while", TokenKind::While), ("for", TokenKind::For),
+            ("in", TokenKind::In), ("break", TokenKind::Break),
+            ("struct", TokenKind::Struct), ("enum", TokenKind::Enum),
+            ("match", TokenKind::Match), ("spawn", TokenKind::Spawn),
+        ];
+        for (kw, expected) in keywords {
+            let mut l = Lexer::new(kw, "test.lyz");
+            assert_eq!(l.lex_identifier().unwrap().kind, expected, "keyword: {}", kw);
+        }
     }
 }
