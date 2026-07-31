@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::fmt;
+use std::rc::Rc;
 
 use crate::parser::ast::{FnBody, Param};
 
@@ -26,7 +28,7 @@ pub enum Value {
         name: String,
         params: Vec<Param>,
         body: FnBody,
-        closure: Environment,
+        closure: Rc<RefCell<Environment>>,
     },
     Builtin {
         name: &'static str,
@@ -199,7 +201,7 @@ mod value_tests {
                 statements: vec![],
                 span: s(),
             }),
-            closure: Environment::default(),
+            closure: Rc::new(RefCell::new(Environment::default())),
         }
     }
 
