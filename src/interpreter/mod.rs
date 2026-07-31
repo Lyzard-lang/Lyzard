@@ -4,6 +4,7 @@ pub mod error;
 pub mod value;
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::lexer::Span;
@@ -111,11 +112,14 @@ impl Interpreter {
                 Ok(Value::Array(items))
             }
             Expr::StructInit(si) => {
-                let mut fields = Vec::new();
+                let mut fields = HashMap::new();
                 for (name, e) in &si.fields {
-                    fields.push((name.clone(), self.eval_expr(e)?));
+                    fields.insert(name.clone(), self.eval_expr(e)?);
                 }
-                Ok(Value::Struct(si.name.clone(), fields))
+                Ok(Value::Struct {
+                    name: si.name.clone(),
+                    fields,
+                })
             }
             Expr::Binary(bin) => {
                 let left = self.eval_expr(&bin.left)?;
@@ -268,8 +272,8 @@ impl Interpreter {
         span: Span,
     ) -> Result<Value, RuntimeError> {
         match obj {
-            Value::Struct(name, fields) => match fields.iter().find(|(k, _)| k == field) {
-                Some((_, v)) => Ok(v.clone()),
+            Value::Struct { name, fields } => match fields.get(field) {
+                Some(v) => Ok(v.clone()),
                 None => Err(RuntimeError::FieldNotFound {
                     name: field.to_string(),
                     object_type: name,
@@ -341,19 +345,17 @@ impl Interpreter {
             Expr::Field(f) => {
                 let obj = self.eval_expr(&f.object)?;
                 match obj {
-                    Value::Struct(name, mut fields) => {
-                        match fields.iter_mut().find(|(k, _)| k == &f.field) {
-                            Some(slot) => {
-                                slot.1 = value.clone();
-                                Ok(value)
-                            }
-                            None => Err(RuntimeError::FieldNotFound {
-                                name: f.field.clone(),
-                                object_type: name,
-                                span,
-                            }),
+                    Value::Struct { name, mut fields } => match fields.get_mut(&f.field) {
+                        Some(slot) => {
+                            *slot = value.clone();
+                            Ok(value)
                         }
-                    }
+                        None => Err(RuntimeError::FieldNotFound {
+                            name: f.field.clone(),
+                            object_type: name,
+                            span,
+                        }),
+                    },
                     other => Err(RuntimeError::TypeError {
                         expected: "struct".to_string(),
                         got: other.type_name().to_string(),
@@ -422,7 +424,7 @@ impl Interpreter {
                         .and_then(|a| a.as_str().ok())
                         .unwrap_or_default();
                     let parts: Vec<String> = items.iter().map(|v| v.to_display_string()).collect();
-                    return Ok(Value::Str(parts.join(&sep)));
+                    return Ok(Value::Str(parts.join(sep)));
                 }
                 _ => {}
             },
@@ -436,21 +438,21 @@ impl Interpreter {
                         .first()
                         .and_then(|a| a.as_str().ok())
                         .unwrap_or_default();
-                    return Ok(Value::Bool(s.starts_with(&needle)));
+                    return Ok(Value::Bool(s.starts_with(needle)));
                 }
                 "endsWith" => {
                     let needle = args
                         .first()
                         .and_then(|a| a.as_str().ok())
                         .unwrap_or_default();
-                    return Ok(Value::Bool(s.ends_with(&needle)));
+                    return Ok(Value::Bool(s.ends_with(needle)));
                 }
                 "contains" => {
                     let needle = args
                         .first()
                         .and_then(|a| a.as_str().ok())
                         .unwrap_or_default();
-                    return Ok(Value::Bool(s.contains(&needle)));
+                    return Ok(Value::Bool(s.contains(needle)));
                 }
                 _ => {}
             },
@@ -460,7 +462,7 @@ impl Interpreter {
         // User-defined methods are named `<type>_<method>`; for structs the
         // type part is the struct's own name.
         let type_base = match &obj {
-            Value::Struct(name, _) => name.clone(),
+            Value::Struct { name, .. } => name.clone(),
             other => other.type_name().to_string(),
         };
         let method_name = format!("{type_base}_{method}");
@@ -831,7 +833,7 @@ fn pattern_matches(pattern: &Pattern, value: &Value) -> bool {
             LiteralValue::Null => matches!(value, Value::Null),
         },
         Pattern::EnumVariant(ev) => match value {
-            Value::Struct(name, _) => name == &ev.variant_name,
+            Value::Struct { name, .. } => name == &ev.variant_name,
             _ => false,
         },
         Pattern::Or(o) => o.alternatives.iter().any(|p| pattern_matches(p, value)),
@@ -846,9 +848,14 @@ fn bind_pattern(env: &mut Environment, pattern: &Pattern, value: Value) {
             env.define(&bp.name, value);
         }
         Pattern::EnumVariant(ev) => {
-            if let Value::Struct(_, fields) = value {
+            if let Value::Struct { fields, .. } = value {
+                let mut ordered: Vec<(&String, &Value)> = fields.iter().collect();
+                ordered.sort_by(|a, b| a.0.cmp(b.0));
                 for (i, sub) in ev.bindings.iter().enumerate() {
-                    let field_value = fields.get(i).map(|(_, v)| v.clone()).unwrap_or(Value::Null);
+                    let field_value = ordered
+                        .get(i)
+                        .map(|(_, v)| (*v).clone())
+                        .unwrap_or(Value::Null);
                     bind_pattern(env, sub, field_value);
                 }
             }
@@ -1694,13 +1701,13 @@ mod call_access_tests {
         let mut i = Interpreter::new();
         i.env.define(
             "p",
-            Value::Struct(
-                "Point".to_string(),
-                vec![
+            Value::Struct {
+                name: "Point".to_string(),
+                fields: HashMap::from([
                     ("x".to_string(), Value::Int(3)),
                     ("y".to_string(), Value::Int(4)),
-                ],
-            ),
+                ]),
+            },
         );
         let e = Expr::Field(FieldExpr {
             object: Box::new(ident("p")),
@@ -1715,7 +1722,10 @@ mod call_access_tests {
         let mut i = Interpreter::new();
         i.env.define(
             "p",
-            Value::Struct("Point".to_string(), vec![("x".to_string(), Value::Int(3))]),
+            Value::Struct {
+                name: "Point".to_string(),
+                fields: HashMap::from([("x".to_string(), Value::Int(3))]),
+            },
         );
         let e = Expr::Field(FieldExpr {
             object: Box::new(ident("p")),
