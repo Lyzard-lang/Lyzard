@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use crate::lexer::token::Span;
 
 /// Every error the lexer can produce
@@ -7,46 +9,46 @@ pub enum LexError {
     UnexpectedChar {
         ch: char,
         span: Span,
-        file: String,
+        file: Rc<str>,
     },
 
     /// String opened with " but never closed before end of file/line
     UnterminatedString {
         span: Span,
-        file: String,
+        file: Rc<str>,
     },
 
     /// Char literal opened with ' but never closed
     UnterminatedChar {
         span: Span,
-        file: String,
+        file: Rc<str>,
     },
 
     /// Char literal has more than one character: 'ab'
     InvalidCharLiteral {
         content: String,
         span: Span,
-        file: String,
+        file: Rc<str>,
     },
 
     /// An escape sequence we don't support: "\q"
     InvalidEscape {
         ch: char,
         span: Span,
-        file: String,
+        file: Rc<str>,
     },
 
     /// A number that can't be parsed: 999999999999999999999
     NumberOverflow {
         raw: String,
         span: Span,
-        file: String,
+        file: Rc<str>,
     },
 
     /// Multi-line comment opened but never closed
     UnterminatedComment {
         span: Span,
-        file: String,
+        file: Rc<str>,
     },
 }
 
@@ -176,12 +178,14 @@ mod error_tests {
 
     fn dummy_span() -> Span { Span::new(0, 1, 1, 1) }
 
+    fn file() -> Rc<str> { Rc::from("test.lyz") }
+
     #[test]
     fn test_unexpected_char_display() {
         let err = LexError::UnexpectedChar {
             ch: '@',
             span: dummy_span(),
-            file: "test.lyz".to_string(),
+            file: file(),
         };
         let msg = format!("{}", err);
         assert!(msg.contains('@'));
@@ -192,7 +196,7 @@ mod error_tests {
     fn test_unterminated_string_display() {
         let err = LexError::UnterminatedString {
             span: Span::new(5, 6, 3, 10),
-            file: "main.lyz".to_string(),
+            file: Rc::from("main.lyz"),
         };
         let msg = format!("{}", err);
         assert!(msg.contains("unterminated string"));
@@ -205,7 +209,7 @@ mod error_tests {
         let err = LexError::UnexpectedChar {
             ch: '@',
             span: Span::new(8, 9, 1, 9),
-            file: "test.lyz".to_string(),
+            file: file(),
         };
         let formatted = err.format(source);
         assert!(formatted.contains("Unexpected character"));
@@ -219,7 +223,7 @@ mod error_tests {
         let err = LexError::InvalidEscape {
             ch: 'q',
             span: dummy_span(),
-            file: "test.lyz".to_string(),
+            file: file(),
         };
         let msg = format!("{}", err);
         assert!(msg.contains("\\q"));
@@ -229,7 +233,7 @@ mod error_tests {
     fn test_unterminated_char_display() {
         let err = LexError::UnterminatedChar {
             span: dummy_span(),
-            file: "test.lyz".to_string(),
+            file: file(),
         };
         let msg = format!("{}", err);
         assert!(msg.contains("unterminated char"));
@@ -240,7 +244,7 @@ mod error_tests {
         let err = LexError::InvalidCharLiteral {
             content: "ab".to_string(),
             span: dummy_span(),
-            file: "test.lyz".to_string(),
+            file: file(),
         };
         let msg = format!("{}", err);
         assert!(msg.contains("ab"));
@@ -252,7 +256,7 @@ mod error_tests {
         let err = LexError::NumberOverflow {
             raw: "99999999999999999999999999".to_string(),
             span: dummy_span(),
-            file: "test.lyz".to_string(),
+            file: file(),
         };
         let msg = format!("{}", err);
         assert!(msg.contains("overflows"));
@@ -263,7 +267,7 @@ mod error_tests {
         fn takes_error<E: std::error::Error>(_e: E) {}
         takes_error(LexError::UnterminatedString {
             span: dummy_span(),
-            file: "x".to_string(),
+            file: file(),
         });
     }
 }

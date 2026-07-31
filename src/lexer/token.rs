@@ -10,7 +10,7 @@ pub enum TokenKind {
     CharLiteral(char),         // 'a', '\n'
 
     // ── IDENTIFIERS ──────────────────────────────────────────
-    Identifier(String),        // myVar, user, _private
+    Identifier(std::rc::Rc<str>),  // myVar, user, _private (interned)
 
     // ── KEYWORDS ─────────────────────────────────────────────
     Let,       // let
@@ -227,7 +227,7 @@ mod tests {
         assert!(TokenKind::Fn.is_keyword());
         assert!(TokenKind::While.is_keyword());
         assert!(!TokenKind::Plus.is_keyword());
-        assert!(!TokenKind::Identifier("x".to_string()).is_keyword());
+        assert!(!TokenKind::Identifier("x".into()).is_keyword());
     }
 
     #[test]
@@ -305,16 +305,16 @@ impl std::fmt::Display for Span {
 pub struct Token {
     pub kind: TokenKind,
     pub span: Span,
-    pub file: String,
+    pub file: std::rc::Rc<str>,
 }
 
 impl Token {
-    pub fn new(kind: TokenKind, span: Span, file: impl Into<String>) -> Self {
+    pub fn new(kind: TokenKind, span: Span, file: impl Into<std::rc::Rc<str>>) -> Self {
         Token { kind, span, file: file.into() }
     }
 
     pub fn dummy(kind: TokenKind) -> Self {
-        Token { kind, span: Span::dummy(), file: "<test>".to_string() }
+        Token { kind, span: Span::dummy(), file: std::rc::Rc::from("<test>") }
     }
 
     pub fn is_eof(&self) -> bool {
@@ -327,7 +327,7 @@ impl Token {
 
     pub fn identifier_name(&self) -> &str {
         match &self.kind {
-            TokenKind::Identifier(name) => name,
+            TokenKind::Identifier(name) => name.as_ref(),
             _ => panic!("Token is not an identifier: {:?}", self.kind),
         }
     }
@@ -382,7 +382,7 @@ mod span_tests {
 
     #[test]
     fn test_token_identifier_name() {
-        let tok = Token::dummy(TokenKind::Identifier("myVar".to_string()));
+        let tok = Token::dummy(TokenKind::Identifier("myVar".into()));
         assert_eq!(tok.identifier_name(), "myVar");
     }
 

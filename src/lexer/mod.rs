@@ -4,155 +4,275 @@ mod error;
 pub use token::{Token, TokenKind, Span};
 pub use error::LexError;
 
+type InternMap = std::collections::HashSet<std::rc::Rc<str>, std::hash::BuildHasherDefault<FnvHasher>>;
+
+/// Fast FNV-1a hasher for the identifier interner.
+struct FnvHasher(u64);
+
+impl Default for FnvHasher {
+    fn default() -> Self {
+        FnvHasher(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl std::hash::Hasher for FnvHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        let mut h = self.0;
+        for &b in bytes {
+            h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        self.0 = h;
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
 pub struct Lexer {
-    source: Vec<char>,
+    source: Vec<u8>,
     pos: usize,
-    byte_pos: usize,
     line: usize,
     col: usize,
-    file: String,
+    col_dirty: bool,
+    file: std::rc::Rc<str>,
+    interns: InternMap,
 }
 
 impl Lexer {
     pub fn new(source: &str, file: impl Into<String>) -> Self {
         Lexer {
-            source: source.chars().collect(),
+            source: source.as_bytes().to_vec(),
             pos: 0,
-            byte_pos: 0,
             line: 1,
             col: 1,
-            file: file.into(),
+            col_dirty: false,
+            file: std::rc::Rc::from(file.into()),
+            interns: std::collections::HashSet::with_hasher(Default::default()),
         }
     }
 
+    #[cfg(test)]
     fn is_at_end(&self) -> bool {
         self.pos >= self.source.len()
     }
 
+    fn char_at(&self, p: usize) -> char {
+        if p >= self.source.len() {
+            '\0'
+        } else {
+            let b = self.source[p];
+            if b < 0x80 {
+                b as char
+            } else {
+                std::str::from_utf8(&self.source[p..])
+                    .ok()
+                    .and_then(|s| s.chars().next())
+                    .unwrap_or('\u{FFFD}')
+            }
+        }
+    }
+
+    // ── Char-based helpers (kept for tests / future phases) ──
+
+    #[cfg(test)]
     fn current(&self) -> char {
-        if self.is_at_end() { '\0' } else { self.source[self.pos] }
+        self.char_at(self.pos)
     }
 
+    #[cfg(test)]
     fn peek(&self) -> char {
-        if self.pos + 1 >= self.source.len() { '\0' } else { self.source[self.pos + 1] }
+        self.char_at(self.pos + 1)
     }
 
+    #[cfg(test)]
     fn peek2(&self) -> char {
-        if self.pos + 2 >= self.source.len() { '\0' } else { self.source[self.pos + 2] }
+        self.char_at(self.pos + 2)
     }
 
+    #[cfg(test)]
     fn advance(&mut self) -> char {
-        let ch = self.current();
-        self.pos += 1;
-        self.byte_pos += ch.len_utf8();
+        let ch = self.char_at(self.pos);
+        self.pos += ch.len_utf8();
         self.col += 1;
         ch
     }
 
+    #[cfg(test)]
     fn advance_if(&mut self, expected: char) -> bool {
         if !self.is_at_end() && self.current() == expected {
-            self.advance();
+            self.pos += expected.len_utf8();
+            self.col += 1;
             true
         } else {
             false
         }
     }
 
+    #[cfg(test)]
     fn advance_while<F: Fn(char) -> bool>(&mut self, predicate: F) {
         while !self.is_at_end() && predicate(self.current()) {
             self.advance();
         }
     }
 
-    fn current_pos(&self) -> usize {
-        self.byte_pos
-    }
-
-    fn span_from(&self, start: usize) -> Span {
-        Span::new(start, self.byte_pos, self.line, self.col.saturating_sub(self.byte_pos - start))
-    }
-
-    fn single_span(&self) -> Span {
-        Span::new(
-            self.byte_pos.saturating_sub(1),
-            self.byte_pos,
-            self.line,
-            self.col.saturating_sub(1),
-        )
-    }
-
     fn make_token(&self, kind: TokenKind, span: Span) -> Token {
         Token::new(kind, span, self.file.clone())
     }
 
+    #[cfg(test)]
     fn is_digit(ch: char) -> bool {
         ch.is_ascii_digit()
     }
 
+    #[cfg(test)]
     fn is_alpha(ch: char) -> bool {
         ch.is_ascii_alphabetic() || ch == '_'
     }
 
+    #[cfg(test)]
     fn is_alphanumeric(ch: char) -> bool {
         ch.is_ascii_alphanumeric() || ch == '_'
     }
 
+    #[cfg(test)]
     fn is_whitespace(ch: char) -> bool {
         matches!(ch, ' ' | '\t' | '\r')
     }
 
+    #[cfg(test)]
     fn skip_whitespace(&mut self) {
         while !self.is_at_end() && Self::is_whitespace(self.current()) {
             self.advance();
         }
     }
 
+    // ── Byte-based helpers (hot path) ────────────────────────
+
+    fn skip_whitespace_byte(&mut self) {
+        while self.pos < self.source.len() {
+            match self.source[self.pos] {
+                b' ' | b'\t' | b'\r' => {
+                    self.pos += 1;
+                    self.col += 1;
+                }
+                _ => break,
+            }
+        }
+    }
+
+    fn current_byte(&self) -> u8 {
+        if self.pos >= self.source.len() { 0 } else { self.source[self.pos] }
+    }
+
+    fn peek_byte(&self) -> u8 {
+        if self.pos + 1 >= self.source.len() { 0 } else { self.source[self.pos + 1] }
+    }
+
+    fn advance_byte(&mut self) -> u8 {
+        let b = self.source[self.pos];
+        self.pos += 1;
+        b
+    }
+
+    fn advance_if_byte(&mut self, expected: u8) -> bool {
+        if self.pos < self.source.len() && self.source[self.pos] == expected {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn advance_char(&mut self) -> char {
+        let ch = std::str::from_utf8(&self.source[self.pos..])
+            .ok()
+            .and_then(|s| s.chars().next())
+            .unwrap_or('\u{FFFD}');
+        self.pos += ch.len_utf8();
+        self.col += 1;
+        ch
+    }
+
+    fn sync_col(&mut self, start: usize, start_col: usize) {
+        if self.col_dirty {
+            let count = std::str::from_utf8(&self.source[start..self.pos])
+                .unwrap()
+                .chars()
+                .count();
+            self.col = start_col + count;
+            self.col_dirty = false;
+        } else {
+            self.col = start_col + (self.pos - start);
+        }
+    }
+
+    fn finish_span(&mut self, start: usize, line: usize, col: usize) -> Span {
+        let end = self.pos;
+        self.sync_col(start, col);
+        Span::new(start, end, line, col)
+    }
+
     fn skip_comments(&mut self) -> Result<bool, LexError> {
         let mut skipped = false;
 
         loop {
-            if self.current() == '-' && self.peek() == '-' {
-                self.advance();
-                self.advance();
-                while !self.is_at_end() && self.current() != '\n' {
-                    self.advance();
+            if self.current_byte() == b'-' && self.peek_byte() == b'-' {
+                let start = self.pos;
+                let start_col = self.col;
+                self.pos += 2;
+                while self.pos < self.source.len() && self.source[self.pos] != b'\n' {
+                    if self.source[self.pos] >= 0x80 {
+                        self.col_dirty = true;
+                    }
+                    self.pos += 1;
                 }
+                self.sync_col(start, start_col);
                 skipped = true;
                 continue;
             }
 
-            if self.current() == '/' && self.peek() == '-' {
-                let start = self.current_pos();
+            if self.current_byte() == b'/' && self.peek_byte() == b'-' {
+                let start = self.pos;
                 let start_line = self.line;
                 let start_col = self.col;
+                let mut col = self.col;
 
-                self.advance();
-                self.advance();
+                self.pos += 2;
+                col += 2;
 
                 let mut closed = false;
-                while !self.is_at_end() {
-                    if self.current() == '-' && self.peek() == '/' {
-                        self.advance();
-                        self.advance();
+                while self.pos < self.source.len() {
+                    let b = self.source[self.pos];
+                    if b == b'-' && self.pos + 1 < self.source.len() && self.source[self.pos + 1] == b'/' {
+                        self.pos += 2;
+                        col += 2;
                         closed = true;
                         break;
                     }
-                    if self.current() == '\n' {
+                    if b == b'\n' {
                         self.line += 1;
-                        self.col = 1;
-                        self.advance();
+                        col = 1;
+                        self.pos += 1;
+                    } else if b >= 0x80 {
+                        self.col_dirty = true;
+                        let clen = if b >= 0xF0 { 4 } else if b >= 0xE0 { 3 } else if b >= 0xC0 { 2 } else { 1 };
+                        self.pos += clen;
+                        col += 1;
                     } else {
-                        self.advance();
+                        self.pos += 1;
+                        col += 1;
                     }
                 }
 
                 if !closed {
                     return Err(LexError::UnterminatedComment {
-                        span: Span::new(start, self.byte_pos, start_line, start_col),
-                        file: self.file.clone(),
+                        span: Span::new(start, self.pos, start_line, start_col),
+                        file: std::rc::Rc::clone(&self.file),
                     });
                 }
 
+                self.col = col;
                 skipped = true;
                 continue;
             }
@@ -164,153 +284,289 @@ impl Lexer {
     }
 
     fn lex_number(&mut self) -> Result<Token, LexError> {
-        let start = self.current_pos();
-        let start_col = self.col;
+        let start = self.pos;
         let start_line = self.line;
+        let start_col = self.col;
 
-        if self.current() == '0' {
-            match self.peek() {
-                'x' | 'X' => return self.lex_hex(start, start_line, start_col),
-                'b' | 'B' => return self.lex_binary(start, start_line, start_col),
-                'o' | 'O' => return self.lex_octal(start, start_line, start_col),
+        if self.current_byte() == b'0' {
+            match self.peek_byte() {
+                b'x' | b'X' => return self.lex_hex(start, start_line, start_col),
+                b'b' | b'B' => return self.lex_binary(start, start_line, start_col),
+                b'o' | b'O' => return self.lex_octal(start, start_line, start_col),
                 _ => {}
             }
         }
 
-        let mut raw = String::with_capacity(16);
-        self.collect_decimal_digits(&mut raw);
-
-        if self.current() == '.' && Self::is_digit(self.peek()) {
-            raw.push('.');
-            self.advance();
-            self.collect_decimal_digits(&mut raw);
-
-            if matches!(self.current(), 'e' | 'E') {
-                raw.push('e');
-                self.advance();
-                if matches!(self.current(), '+' | '-') {
-                    raw.push(self.advance());
+        let mut val: i64 = 0;
+        while self.pos < self.source.len() {
+            let b = self.source[self.pos];
+            if b == b'_' {
+                self.pos += 1;
+                continue;
+            }
+            if !b.is_ascii_digit() {
+                break;
+            }
+            match val.checked_mul(10).and_then(|v| v.checked_add((b - b'0') as i64)) {
+                Some(v) => val = v,
+                None => {
+                    while self.pos < self.source.len()
+                        && (self.source[self.pos].is_ascii_digit() || self.source[self.pos] == b'_')
+                    {
+                        self.pos += 1;
+                    }
+                    let raw = self.number_raw(start);
+                    let span = self.finish_span(start, start_line, start_col);
+                    return Err(LexError::NumberOverflow {
+                        raw,
+                        span,
+                        file: std::rc::Rc::clone(&self.file),
+                    });
                 }
-                self.collect_decimal_digits(&mut raw);
+            }
+            self.pos += 1;
+        }
+
+        if self.current_byte() == b'.' && self.peek_byte().is_ascii_digit() {
+            self.pos += 1;
+            while self.pos < self.source.len() {
+                let b = self.source[self.pos];
+                if b == b'_' {
+                    self.pos += 1;
+                    continue;
+                }
+                if !b.is_ascii_digit() {
+                    break;
+                }
+                self.pos += 1;
             }
 
-            let span = Span::new(start, self.byte_pos, start_line, start_col);
+            if matches!(self.current_byte(), b'e' | b'E') {
+                self.pos += 1;
+                if matches!(self.current_byte(), b'+' | b'-') {
+                    self.pos += 1;
+                }
+                while self.pos < self.source.len() && self.source[self.pos].is_ascii_digit() {
+                    self.pos += 1;
+                }
+            }
+
+            let span = self.finish_span(start, start_line, start_col);
+            let raw = self.number_raw(start);
             let val: f64 = raw.parse().map_err(|_| LexError::NumberOverflow {
-                raw: raw.clone(),
+                raw,
                 span,
-                file: self.file.clone(),
+                file: std::rc::Rc::clone(&self.file),
             })?;
             return Ok(self.make_token(TokenKind::FloatLiteral(val), span));
         }
 
-        let span = Span::new(start, self.byte_pos, start_line, start_col);
-        let val: i64 = raw.parse().map_err(|_| LexError::NumberOverflow {
-            raw: raw.clone(),
-            span,
-            file: self.file.clone(),
-        })?;
+        let span = self.finish_span(start, start_line, start_col);
         Ok(self.make_token(TokenKind::IntLiteral(val), span))
     }
 
-    fn collect_decimal_digits(&mut self, buf: &mut String) {
-        while !self.is_at_end() && (Self::is_digit(self.current()) || self.current() == '_') {
-            if self.current() != '_' {
-                buf.push(self.current());
-            }
-            self.advance();
-        }
+    fn number_raw(&self, start: usize) -> String {
+        self.source[start..self.pos]
+            .iter()
+            .copied()
+            .filter(|&b| b != b'_')
+            .map(char::from)
+            .collect()
     }
 
     fn lex_hex(&mut self, start: usize, line: usize, col: usize) -> Result<Token, LexError> {
-        self.advance();
-        self.advance();
+        self.pos += 2;
 
-        let mut raw = String::with_capacity(8);
-        while !self.is_at_end() && (self.current().is_ascii_hexdigit() || self.current() == '_') {
-            if self.current() != '_' { raw.push(self.current()); }
-            self.advance();
+        let mut val: i64 = 0;
+        let mut any = false;
+        while self.pos < self.source.len() {
+            let b = self.source[self.pos];
+            if b == b'_' {
+                self.pos += 1;
+                continue;
+            }
+            let digit = match b {
+                b'0'..=b'9' => (b - b'0') as i64,
+                b'a'..=b'f' => (b - b'a' + 10) as i64,
+                b'A'..=b'F' => (b - b'A' + 10) as i64,
+                _ => break,
+            };
+            match val.checked_mul(16).and_then(|v| v.checked_add(digit)) {
+                Some(v) => val = v,
+                None => {
+                    while self.pos < self.source.len()
+                        && (self.source[self.pos].is_ascii_hexdigit() || self.source[self.pos] == b'_')
+                    {
+                        self.pos += 1;
+                    }
+                    let span = self.finish_span(start, line, col);
+                    let raw = format!("0x{}", self.number_raw(start + 2));
+                    return Err(LexError::NumberOverflow {
+                        raw,
+                        span,
+                        file: std::rc::Rc::clone(&self.file),
+                    });
+                }
+            }
+            any = true;
+            self.pos += 1;
         }
 
-        let span = Span::new(start, self.byte_pos, line, col);
-        let val = i64::from_str_radix(&raw, 16).map_err(|_| LexError::NumberOverflow {
-            raw: format!("0x{}", raw),
-            span,
-            file: self.file.clone(),
-        })?;
+        let span = self.finish_span(start, line, col);
+        if !any {
+            return Err(LexError::NumberOverflow {
+                raw: "0x".to_string(),
+                span,
+                file: std::rc::Rc::clone(&self.file),
+            });
+        }
         Ok(self.make_token(TokenKind::IntLiteral(val), span))
     }
 
     fn lex_binary(&mut self, start: usize, line: usize, col: usize) -> Result<Token, LexError> {
-        self.advance();
-        self.advance();
+        self.pos += 2;
 
-        let mut raw = String::with_capacity(8);
-        while !self.is_at_end() && matches!(self.current(), '0' | '1' | '_') {
-            if self.current() != '_' { raw.push(self.current()); }
-            self.advance();
+        let mut val: i64 = 0;
+        let mut any = false;
+        while self.pos < self.source.len() {
+            let b = self.source[self.pos];
+            if b == b'_' {
+                self.pos += 1;
+                continue;
+            }
+            if b != b'0' && b != b'1' {
+                break;
+            }
+            match val.checked_mul(2).and_then(|v| v.checked_add((b - b'0') as i64)) {
+                Some(v) => val = v,
+                None => {
+                    while self.pos < self.source.len()
+                        && matches!(self.source[self.pos], b'0' | b'1' | b'_')
+                    {
+                        self.pos += 1;
+                    }
+                    let span = self.finish_span(start, line, col);
+                    let raw = format!("0b{}", self.number_raw(start + 2));
+                    return Err(LexError::NumberOverflow {
+                        raw,
+                        span,
+                        file: std::rc::Rc::clone(&self.file),
+                    });
+                }
+            }
+            any = true;
+            self.pos += 1;
         }
 
-        let span = Span::new(start, self.byte_pos, line, col);
-        let val = i64::from_str_radix(&raw, 2).map_err(|_| LexError::NumberOverflow {
-            raw: format!("0b{}", raw),
-            span,
-            file: self.file.clone(),
-        })?;
+        let span = self.finish_span(start, line, col);
+        if !any {
+            return Err(LexError::NumberOverflow {
+                raw: "0b".to_string(),
+                span,
+                file: std::rc::Rc::clone(&self.file),
+            });
+        }
         Ok(self.make_token(TokenKind::IntLiteral(val), span))
     }
 
     fn lex_octal(&mut self, start: usize, line: usize, col: usize) -> Result<Token, LexError> {
-        self.advance();
-        self.advance();
+        self.pos += 2;
 
-        let mut raw = String::with_capacity(8);
-        while !self.is_at_end() && (matches!(self.current(), '0'..='7') || self.current() == '_') {
-            if self.current() != '_' { raw.push(self.current()); }
-            self.advance();
+        let mut val: i64 = 0;
+        let mut any = false;
+        while self.pos < self.source.len() {
+            let b = self.source[self.pos];
+            if b == b'_' {
+                self.pos += 1;
+                continue;
+            }
+            if !matches!(b, b'0'..=b'7') {
+                break;
+            }
+            match val.checked_mul(8).and_then(|v| v.checked_add((b - b'0') as i64)) {
+                Some(v) => val = v,
+                None => {
+                    while self.pos < self.source.len()
+                        && (matches!(self.source[self.pos], b'0'..=b'7') || self.source[self.pos] == b'_')
+                    {
+                        self.pos += 1;
+                    }
+                    let span = self.finish_span(start, line, col);
+                    let raw = format!("0o{}", self.number_raw(start + 2));
+                    return Err(LexError::NumberOverflow {
+                        raw,
+                        span,
+                        file: std::rc::Rc::clone(&self.file),
+                    });
+                }
+            }
+            any = true;
+            self.pos += 1;
         }
 
-        let span = Span::new(start, self.byte_pos, line, col);
-        let val = i64::from_str_radix(&raw, 8).map_err(|_| LexError::NumberOverflow {
-            raw: format!("0o{}", raw),
-            span,
-            file: self.file.clone(),
-        })?;
+        let span = self.finish_span(start, line, col);
+        if !any {
+            return Err(LexError::NumberOverflow {
+                raw: "0o".to_string(),
+                span,
+                file: std::rc::Rc::clone(&self.file),
+            });
+        }
         Ok(self.make_token(TokenKind::IntLiteral(val), span))
     }
 
     fn lex_string(&mut self) -> Result<Token, LexError> {
-        let start = self.current_pos();
+        let start = self.pos;
         let start_line = self.line;
         let start_col = self.col;
 
-        self.advance();
+        self.pos += 1;
+        self.col += 1;
 
         let mut value = String::with_capacity(32);
 
         loop {
-            if self.is_at_end() || self.current() == '\n' {
+            if self.pos >= self.source.len() {
                 return Err(LexError::UnterminatedString {
-                    span: Span::new(start, self.byte_pos, start_line, start_col),
-                    file: self.file.clone(),
+                    span: Span::new(start, self.pos, start_line, start_col),
+                    file: std::rc::Rc::clone(&self.file),
                 });
             }
 
-            if self.current() == '"' {
-                self.advance();
+            let b = self.source[self.pos];
+
+            if b == b'\n' {
+                return Err(LexError::UnterminatedString {
+                    span: Span::new(start, self.pos, start_line, start_col),
+                    file: std::rc::Rc::clone(&self.file),
+                });
+            }
+
+            if b == b'"' {
+                self.pos += 1;
+                self.col += 1;
                 break;
             }
 
-            if self.current() == '\\' {
-                self.advance();
+            if b == b'\\' {
+                self.pos += 1;
+                self.col += 1;
                 let escaped = self.lex_escape_sequence(start, start_line, start_col)?;
                 value.push(escaped);
                 continue;
             }
 
-            value.push(self.advance());
+            if b >= 0x80 {
+                self.col_dirty = true;
+                value.push(self.advance_char());
+            } else {
+                value.push(b as char);
+                self.pos += 1;
+                self.col += 1;
+            }
         }
 
-        let span = Span::new(start, self.byte_pos, start_line, start_col);
+        let span = Span::new(start, self.pos, start_line, start_col);
         Ok(self.make_token(TokenKind::StringLiteral(value), span))
     }
 
@@ -320,16 +576,16 @@ impl Lexer {
         string_line: usize,
         string_col: usize,
     ) -> Result<char, LexError> {
-        if self.is_at_end() {
+        if self.pos >= self.source.len() {
             return Err(LexError::UnterminatedString {
-                span: Span::new(string_start, self.byte_pos, string_line, string_col),
-                file: self.file.clone(),
+                span: Span::new(string_start, self.pos, string_line, string_col),
+                file: std::rc::Rc::clone(&self.file),
             });
         }
 
         let escape_col = self.col;
         let escape_line = self.line;
-        let ch = self.advance();
+        let ch = self.advance_char();
 
         match ch {
             'n'  => Ok('\n'),
@@ -343,12 +599,12 @@ impl Lexer {
             other => Err(LexError::InvalidEscape {
                 ch: other,
                 span: Span::new(
-                    self.byte_pos.saturating_sub(2),
-                    self.byte_pos,
+                    self.pos.saturating_sub(2),
+                    self.pos,
                     escape_line,
                     escape_col.saturating_sub(1),
                 ),
-                file: self.file.clone(),
+                file: std::rc::Rc::clone(&self.file),
             }),
         }
     }
@@ -359,65 +615,64 @@ impl Lexer {
         string_line: usize,
         string_col: usize,
     ) -> Result<char, LexError> {
-        if !self.advance_if('{') {
+        if !self.advance_if_byte(b'{') {
             return Err(LexError::InvalidEscape {
                 ch: 'u',
-                span: Span::new(string_start, self.byte_pos, string_line, string_col),
-                file: self.file.clone(),
+                span: Span::new(string_start, self.pos, string_line, string_col),
+                file: std::rc::Rc::clone(&self.file),
             });
         }
 
         let mut hex = String::with_capacity(6);
-        while !self.is_at_end() && self.current() != '}' {
-            if self.current().is_ascii_hexdigit() {
-                hex.push(self.advance());
+        while self.pos < self.source.len() && self.source[self.pos] != b'}' {
+            let b = self.source[self.pos];
+            if b.is_ascii_hexdigit() {
+                hex.push(self.advance_byte() as char);
             } else {
                 return Err(LexError::InvalidEscape {
-                    ch: self.current(),
-                    span: Span::new(string_start, self.byte_pos, string_line, string_col),
-                    file: self.file.clone(),
+                    ch: self.char_at(self.pos),
+                    span: Span::new(string_start, self.pos, string_line, string_col),
+                    file: std::rc::Rc::clone(&self.file),
                 });
             }
         }
 
-        if !self.advance_if('}') {
+        if !self.advance_if_byte(b'}') {
             return Err(LexError::UnterminatedString {
-                span: Span::new(string_start, self.byte_pos, string_line, string_col),
-                file: self.file.clone(),
+                span: Span::new(string_start, self.pos, string_line, string_col),
+                file: std::rc::Rc::clone(&self.file),
             });
         }
 
         let codepoint = u32::from_str_radix(&hex, 16).map_err(|_| LexError::InvalidEscape {
             ch: 'u',
-            span: Span::new(string_start, self.byte_pos, string_line, string_col),
-            file: self.file.clone(),
+            span: Span::new(string_start, self.pos, string_line, string_col),
+            file: std::rc::Rc::clone(&self.file),
         })?;
 
         char::from_u32(codepoint).ok_or_else(|| LexError::InvalidEscape {
             ch: 'u',
-            span: Span::new(string_start, self.byte_pos, string_line, string_col),
-            file: self.file.clone(),
+            span: Span::new(string_start, self.pos, string_line, string_col),
+            file: std::rc::Rc::clone(&self.file),
         })
     }
 
-    fn newline_is_significant(&self, last_token: Option<&TokenKind>) -> bool {
-        match last_token {
-            None => false,
-            Some(kind) => matches!(kind,
-                TokenKind::IntLiteral(_)    |
-                TokenKind::FloatLiteral(_)  |
-                TokenKind::StringLiteral(_) |
-                TokenKind::BoolLiteral(_)   |
-                TokenKind::CharLiteral(_)   |
-                TokenKind::Identifier(_)    |
-                TokenKind::RightParen       |
-                TokenKind::RightBracket     |
-                TokenKind::RightBrace       |
-                TokenKind::Return           |
-                TokenKind::Break            |
-                TokenKind::Continue
-            ),
-        }
+    /// Does this token end an expression? If so, a following newline is significant.
+    fn ends_expression(kind: &TokenKind) -> bool {
+        matches!(kind,
+            TokenKind::IntLiteral(_)    |
+            TokenKind::FloatLiteral(_)  |
+            TokenKind::StringLiteral(_) |
+            TokenKind::BoolLiteral(_)   |
+            TokenKind::CharLiteral(_)   |
+            TokenKind::Identifier(_)    |
+            TokenKind::RightParen       |
+            TokenKind::RightBracket     |
+            TokenKind::RightBrace       |
+            TokenKind::Return           |
+            TokenKind::Break            |
+            TokenKind::Continue
+        )
     }
 
     // ════════════════════════════════════════
@@ -425,36 +680,45 @@ impl Lexer {
     // ════════════════════════════════════════
 
     fn lex_char(&mut self) -> Result<Token, LexError> {
-        let start = self.current_pos();
+        let start = self.pos;
         let start_line = self.line;
         let start_col = self.col;
 
-        self.advance(); // consume opening '
+        self.pos += 1; // consume opening '
+        self.col += 1;
 
-        if self.is_at_end() || self.current() == '\n' {
+        if self.pos >= self.source.len() || self.source[self.pos] == b'\n' {
             return Err(LexError::UnterminatedChar {
-                span: Span::new(start, self.byte_pos, start_line, start_col),
-                file: self.file.clone(),
+                span: Span::new(start, self.pos, start_line, start_col),
+                file: std::rc::Rc::clone(&self.file),
             });
         }
 
-        let ch = if self.current() == '\\' {
-            self.advance(); // consume backslash
+        let ch = if self.source[self.pos] == b'\\' {
+            self.pos += 1; // consume backslash
+            self.col += 1;
             self.lex_escape_sequence(start, start_line, start_col)?
+        } else if self.source[self.pos] >= 0x80 {
+            self.col_dirty = true;
+            self.advance_char()
         } else {
-            self.advance()
+            let b = self.source[self.pos];
+            self.pos += 1;
+            self.col += 1;
+            b as char
         };
 
-        if self.is_at_end() || self.current() != '\'' {
+        if self.pos >= self.source.len() || self.source[self.pos] != b'\'' {
             return Err(LexError::InvalidCharLiteral {
                 content: ch.to_string(),
-                span: Span::new(start, self.byte_pos, start_line, start_col),
-                file: self.file.clone(),
+                span: Span::new(start, self.pos, start_line, start_col),
+                file: std::rc::Rc::clone(&self.file),
             });
         }
 
-        self.advance(); // consume closing '
-        let span = Span::new(start, self.byte_pos, start_line, start_col);
+        self.pos += 1; // consume closing '
+        self.col += 1;
+        let span = Span::new(start, self.pos, start_line, start_col);
         Ok(self.make_token(TokenKind::CharLiteral(ch), span))
     }
 
@@ -463,134 +727,23 @@ impl Lexer {
     // ════════════════════════════════════════
 
     fn lex_identifier(&mut self) -> Result<Token, LexError> {
-        let start = self.current_pos();
+        let start = self.pos;
         let start_line = self.line;
         let start_col = self.col;
 
-        let mut name = String::with_capacity(16);
-
-        while !self.is_at_end() && Self::is_alphanumeric(self.current()) {
-            name.push(self.advance());
+        while self.pos < self.source.len() {
+            let b = self.source[self.pos];
+            if b.is_ascii_alphanumeric() || b == b'_' {
+                self.pos += 1;
+            } else {
+                break;
+            }
         }
 
-        let kind = Self::keyword_or_identifier(name);
-        let span = Span::new(start, self.byte_pos, start_line, start_col);
-        Ok(self.make_token(kind, span))
-    }
+        let span = self.finish_span(start, start_line, start_col);
+        let slice = std::str::from_utf8(&self.source[start..self.pos]).unwrap();
 
-    // ════════════════════════════════════════
-    //   OPERATOR AND PUNCTUATION LEXING
-    // ════════════════════════════════════════
-
-    fn lex_operator(&mut self) -> Result<Token, LexError> {
-        let start = self.current_pos();
-        let start_line = self.line;
-        let start_col = self.col;
-
-        let ch = self.advance();
-
-        let kind = match ch {
-            '(' => TokenKind::LeftParen,
-            ')' => TokenKind::RightParen,
-            '{' => TokenKind::LeftBrace,
-            '}' => TokenKind::RightBrace,
-            '[' => TokenKind::LeftBracket,
-            ']' => TokenKind::RightBracket,
-            ',' => TokenKind::Comma,
-            ';' => TokenKind::Semicolon,
-            '%' => TokenKind::Percent,
-            '#' => TokenKind::Hash,
-            '*' => TokenKind::Star,
-            ':' => TokenKind::Colon,
-            '+' => TokenKind::Plus,
-
-            '-' => {
-                if self.advance_if('>') { TokenKind::Arrow }
-                else { TokenKind::Minus }
-            }
-
-            '/' => TokenKind::Slash,
-
-            '=' => {
-                if self.advance_if('=') { TokenKind::EqualsEquals }
-                else if self.advance_if('>') { TokenKind::FatArrow }
-                else { TokenKind::Equals }
-            }
-
-            '!' => {
-                if self.advance_if('=') { TokenKind::BangEquals }
-                else { TokenKind::Bang }
-            }
-
-            '<' => {
-                if self.advance_if('=') { TokenKind::LessEquals }
-                else { TokenKind::Less }
-            }
-
-            '>' => {
-                if self.advance_if('=') { TokenKind::GreaterEquals }
-                else { TokenKind::Greater }
-            }
-
-            '&' => {
-                if self.advance_if('&') { TokenKind::And }
-                else {
-                    return Err(LexError::UnexpectedChar {
-                        ch: '&',
-                        span: Span::new(start, self.byte_pos, start_line, start_col),
-                        file: self.file.clone(),
-                    })
-                }
-            }
-
-            '|' => {
-                if self.advance_if('|') { TokenKind::Or }
-                else {
-                    return Err(LexError::UnexpectedChar {
-                        ch: '|',
-                        span: Span::new(start, self.byte_pos, start_line, start_col),
-                        file: self.file.clone(),
-                    })
-                }
-            }
-
-            '.' => {
-                if self.advance_if('.') {
-                    if self.advance_if('=') { TokenKind::DotDotEquals }
-                    else { TokenKind::DotDot }
-                } else {
-                    TokenKind::Dot
-                }
-            }
-
-            '?' => {
-                if self.advance_if('?') { TokenKind::QuestionQuestion }
-                else { TokenKind::Question }
-            }
-
-            '\n' => {
-                self.line += 1;
-                self.col = 1;
-                TokenKind::Newline
-            }
-
-            other => {
-                return Err(LexError::UnexpectedChar {
-                    ch: other,
-                    span: Span::new(start, self.byte_pos, start_line, start_col),
-                    file: self.file.clone(),
-                })
-            }
-        };
-
-        let span = Span::new(start, self.byte_pos, start_line, start_col);
-        Ok(self.make_token(kind, span))
-    }
-
-    /// Check if a name is a keyword. If so, return the keyword token.
-    /// Otherwise, return an Identifier token.
-    fn keyword_or_identifier(name: String) -> TokenKind {
-        match name.as_str() {
+        let kind = match slice {
             "let"      => TokenKind::Let,
             "mut"      => TokenKind::Mut,
             "fn"       => TokenKind::Fn,
@@ -621,8 +774,127 @@ impl Lexer {
             "str"      => TokenKind::StrType,
             "char"     => TokenKind::CharType,
             "void"     => TokenKind::VoidType,
-            _          => TokenKind::Identifier(name),
-        }
+            _ => {
+                if let Some(existing) = self.interns.get(slice) {
+                    TokenKind::Identifier(std::rc::Rc::clone(existing))
+                } else {
+                    let rc: std::rc::Rc<str> = std::rc::Rc::from(slice);
+                    self.interns.insert(std::rc::Rc::clone(&rc));
+                    TokenKind::Identifier(rc)
+                }
+            }
+        };
+
+        Ok(self.make_token(kind, span))
+    }
+
+    // ════════════════════════════════════════
+    //   OPERATOR AND PUNCTUATION LEXING
+    // ════════════════════════════════════════
+
+    fn lex_operator(&mut self) -> Result<Token, LexError> {
+        let start = self.pos;
+        let start_line = self.line;
+        let start_col = self.col;
+
+        let b = self.advance_byte();
+
+        let kind = match b {
+            b'(' => TokenKind::LeftParen,
+            b')' => TokenKind::RightParen,
+            b'{' => TokenKind::LeftBrace,
+            b'}' => TokenKind::RightBrace,
+            b'[' => TokenKind::LeftBracket,
+            b']' => TokenKind::RightBracket,
+            b',' => TokenKind::Comma,
+            b';' => TokenKind::Semicolon,
+            b'%' => TokenKind::Percent,
+            b'#' => TokenKind::Hash,
+            b'*' => TokenKind::Star,
+            b':' => TokenKind::Colon,
+            b'+' => TokenKind::Plus,
+
+            b'-' => {
+                if self.advance_if_byte(b'>') { TokenKind::Arrow }
+                else { TokenKind::Minus }
+            }
+
+            b'/' => TokenKind::Slash,
+
+            b'=' => {
+                if self.advance_if_byte(b'=') { TokenKind::EqualsEquals }
+                else if self.advance_if_byte(b'>') { TokenKind::FatArrow }
+                else { TokenKind::Equals }
+            }
+
+            b'!' => {
+                if self.advance_if_byte(b'=') { TokenKind::BangEquals }
+                else { TokenKind::Bang }
+            }
+
+            b'<' => {
+                if self.advance_if_byte(b'=') { TokenKind::LessEquals }
+                else { TokenKind::Less }
+            }
+
+            b'>' => {
+                if self.advance_if_byte(b'=') { TokenKind::GreaterEquals }
+                else { TokenKind::Greater }
+            }
+
+            b'&' => {
+                if self.advance_if_byte(b'&') { TokenKind::And }
+                else {
+                    return Err(LexError::UnexpectedChar {
+                        ch: '&',
+                        span: Span::new(start, self.pos, start_line, start_col),
+                        file: std::rc::Rc::clone(&self.file),
+                    })
+                }
+            }
+
+            b'|' => {
+                if self.advance_if_byte(b'|') { TokenKind::Or }
+                else {
+                    return Err(LexError::UnexpectedChar {
+                        ch: '|',
+                        span: Span::new(start, self.pos, start_line, start_col),
+                        file: std::rc::Rc::clone(&self.file),
+                    })
+                }
+            }
+
+            b'.' => {
+                if self.advance_if_byte(b'.') {
+                    if self.advance_if_byte(b'=') { TokenKind::DotDotEquals }
+                    else { TokenKind::DotDot }
+                } else {
+                    TokenKind::Dot
+                }
+            }
+
+            b'?' => {
+                if self.advance_if_byte(b'?') { TokenKind::QuestionQuestion }
+                else { TokenKind::Question }
+            }
+
+            b'\n' => {
+                self.line += 1;
+                self.col = 1;
+                TokenKind::Newline
+            }
+
+            other => {
+                return Err(LexError::UnexpectedChar {
+                    ch: if other >= 0x80 { self.char_at(start) } else { other as char },
+                    span: Span::new(start, self.pos, start_line, start_col),
+                    file: std::rc::Rc::clone(&self.file),
+                })
+            }
+        };
+
+        let span = self.finish_span(start, start_line, start_col);
+        Ok(self.make_token(kind, span))
     }
 
     // ════════════════════════════════════════
@@ -637,40 +909,40 @@ impl Lexer {
 
     /// Internal tokenize loop
     fn run(&mut self) -> Result<Vec<Token>, LexError> {
-        let mut tokens: Vec<Token> = Vec::with_capacity(256);
-        let mut last_kind: Option<TokenKind> = None;
+        let mut tokens: Vec<Token> = Vec::with_capacity(self.source.len() / 4 + 16);
+        let mut newline_significant = false;
 
         loop {
             // Step 1: Skip spaces/tabs
-            self.skip_whitespace();
+            self.skip_whitespace_byte();
 
             // Step 2: Skip comments (may loop multiple times for back-to-back comments)
             self.skip_comments()?;
 
             // Step 3: Skip whitespace again after comments
-            self.skip_whitespace();
+            self.skip_whitespace_byte();
 
             // Step 4: End of file
-            if self.is_at_end() {
-                let span = Span::new(self.byte_pos, self.byte_pos, self.line, self.col);
+            if self.pos >= self.source.len() {
+                let span = Span::new(self.pos, self.pos, self.line, self.col);
                 tokens.push(self.make_token(TokenKind::EOF, span));
                 break;
             }
 
-            let ch = self.current();
+            let b = self.source[self.pos];
 
             // Step 5: Handle newlines (significant or skip)
-            if ch == '\n' {
-                if self.newline_is_significant(last_kind.as_ref()) {
-                    let start = self.current_pos();
-                    self.advance();
+            if b == b'\n' {
+                if newline_significant {
+                    let start = self.pos;
+                    self.pos += 1;
                     self.line += 1;
                     self.col = 1;
-                    let span = Span::new(start, self.byte_pos, self.line - 1, self.col);
+                    let span = Span::new(start, self.pos, self.line - 1, self.col);
                     tokens.push(self.make_token(TokenKind::Newline, span));
-                    last_kind = Some(TokenKind::Newline);
+                    newline_significant = false;
                 } else {
-                    self.advance();
+                    self.pos += 1;
                     self.line += 1;
                     self.col = 1;
                 }
@@ -678,19 +950,19 @@ impl Lexer {
             }
 
             // Step 6: Lex the next token
-            let token = if Self::is_digit(ch) {
+            let token = if b.is_ascii_digit() {
                 self.lex_number()?
-            } else if ch == '"' {
+            } else if b == b'"' {
                 self.lex_string()?
-            } else if ch == '\'' {
+            } else if b == b'\'' {
                 self.lex_char()?
-            } else if Self::is_alpha(ch) {
+            } else if b.is_ascii_alphabetic() || b == b'_' {
                 self.lex_identifier()?
             } else {
                 self.lex_operator()?
             };
 
-            last_kind = Some(token.kind.clone());
+            newline_significant = Self::ends_expression(&token.kind);
             tokens.push(token);
         }
 
@@ -780,7 +1052,7 @@ mod lexer_core_tests {
         assert_eq!(lexer.advance(), 'f');
         let e_with_accent = lexer.advance();
         assert_eq!(e_with_accent, 'é');
-        assert_eq!(lexer.byte_pos, 5);
+        assert!(lexer.is_at_end());
     }
 }
 
@@ -838,14 +1110,13 @@ mod whitespace_tests {
 
     #[test]
     fn test_newline_significance() {
-        let lexer = Lexer::new("", "test.lyz");
-
-        assert!(lexer.newline_is_significant(Some(&TokenKind::RightParen)));
-        assert!(lexer.newline_is_significant(Some(&TokenKind::Identifier("x".to_string()))));
-        assert!(lexer.newline_is_significant(Some(&TokenKind::IntLiteral(42))));
-        assert!(!lexer.newline_is_significant(Some(&TokenKind::Plus)));
-        assert!(!lexer.newline_is_significant(Some(&TokenKind::LeftBrace)));
-        assert!(!lexer.newline_is_significant(None));
+        assert!(Lexer::ends_expression(&TokenKind::RightParen));
+        assert!(Lexer::ends_expression(&TokenKind::Identifier("x".into())));
+        assert!(Lexer::ends_expression(&TokenKind::IntLiteral(42)));
+        assert!(!Lexer::ends_expression(&TokenKind::Plus));
+        assert!(!Lexer::ends_expression(&TokenKind::LeftBrace));
+        assert!(!Lexer::ends_expression(&TokenKind::Newline));
+        assert!(!Lexer::ends_expression(&TokenKind::EOF));
     }
 
     #[test]
@@ -1025,8 +1296,13 @@ mod string_tests {
 
     #[test]
     fn test_string_with_utf8_content() {
-        let s = unwrap_str(lex_str("\"\u{0645}\u{0631}\u{062D}\u{0628}\u{0627}\"").unwrap());
-        assert_eq!(s, "\u{0645}\u{0631}\u{062D}\u{0628}\u{0627}");
+        let tok = lex_str("\"\u{0645}\u{0631}\u{062D}\u{0628}\u{0627}\"").unwrap();
+        assert_eq!(tok.span.start, 0);
+        assert_eq!(tok.span.end, 12); // 2 quotes + 5 chars x 2 bytes each
+        match tok.kind {
+            TokenKind::StringLiteral(s) => assert_eq!(s, "\u{0645}\u{0631}\u{062D}\u{0628}\u{0627}"),
+            other => panic!("Expected StringLiteral, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1078,14 +1354,14 @@ mod char_ident_tests {
     fn test_identifier_not_keyword() {
         let mut l = Lexer::new("myVariable", "test.lyz");
         let tok = l.lex_identifier().unwrap();
-        assert_eq!(tok.kind, TokenKind::Identifier("myVariable".to_string()));
+        assert_eq!(tok.kind, TokenKind::Identifier("myVariable".into()));
     }
 
     #[test]
     fn test_identifier_underscore_prefix() {
         let mut l = Lexer::new("_privateVar", "test.lyz");
         let tok = l.lex_identifier().unwrap();
-        assert_eq!(tok.kind, TokenKind::Identifier("_privateVar".to_string()));
+        assert_eq!(tok.kind, TokenKind::Identifier("_privateVar".into()));
     }
 
     #[test]
@@ -1192,7 +1468,7 @@ mod tokenize_tests {
         let toks = kinds("let x = 5");
         assert_eq!(toks, vec![
             TokenKind::Let,
-            TokenKind::Identifier("x".to_string()),
+            TokenKind::Identifier("x".into()),
             TokenKind::Equals,
             TokenKind::IntLiteral(5),
             TokenKind::EOF,
@@ -1204,7 +1480,7 @@ mod tokenize_tests {
         let src = "fn add(a: int, b: int) -> int";
         let toks = kinds(src);
         assert_eq!(toks[0], TokenKind::Fn);
-        assert_eq!(toks[1], TokenKind::Identifier("add".to_string()));
+        assert_eq!(toks[1], TokenKind::Identifier("add".into()));
         assert_eq!(toks[2], TokenKind::LeftParen);
         assert_eq!(toks[10], TokenKind::RightParen);
         assert_eq!(toks[11], TokenKind::Arrow);
@@ -1226,7 +1502,7 @@ mod tokenize_tests {
     #[test]
     fn test_comment_skipped() {
         let toks = kinds("let x = 5 -- this is a comment\nlet y = 6");
-        assert!(!toks.iter().any(|t| matches!(t, TokenKind::Identifier(s) if s == "this")));
+        assert!(!toks.iter().any(|t| matches!(t, TokenKind::Identifier(s) if s.as_ref() == "this")));
         assert!(toks.contains(&TokenKind::Let));
     }
 
