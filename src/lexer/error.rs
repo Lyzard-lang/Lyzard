@@ -6,23 +6,13 @@ use crate::lexer::token::Span;
 #[derive(Debug, Clone, PartialEq)]
 pub enum LexError {
     /// Found a character we don't recognize at all
-    UnexpectedChar {
-        ch: char,
-        span: Span,
-        file: Rc<str>,
-    },
+    UnexpectedChar { ch: char, span: Span, file: Rc<str> },
 
     /// String opened with " but never closed before end of file/line
-    UnterminatedString {
-        span: Span,
-        file: Rc<str>,
-    },
+    UnterminatedString { span: Span, file: Rc<str> },
 
     /// Char literal opened with ' but never closed
-    UnterminatedChar {
-        span: Span,
-        file: Rc<str>,
-    },
+    UnterminatedChar { span: Span, file: Rc<str> },
 
     /// Char literal has more than one character: 'ab'
     InvalidCharLiteral {
@@ -32,11 +22,7 @@ pub enum LexError {
     },
 
     /// An escape sequence we don't support: "\q"
-    InvalidEscape {
-        ch: char,
-        span: Span,
-        file: Rc<str>,
-    },
+    InvalidEscape { ch: char, span: Span, file: Rc<str> },
 
     /// A number that can't be parsed: 999999999999999999999
     NumberOverflow {
@@ -46,33 +32,30 @@ pub enum LexError {
     },
 
     /// Multi-line comment opened but never closed
-    UnterminatedComment {
-        span: Span,
-        file: Rc<str>,
-    },
+    UnterminatedComment { span: Span, file: Rc<str> },
 }
 
 impl LexError {
     pub fn span(&self) -> &Span {
         match self {
-            Self::UnexpectedChar { span, .. }      => span,
-            Self::UnterminatedString { span, .. }  => span,
-            Self::UnterminatedChar { span, .. }    => span,
-            Self::InvalidCharLiteral { span, .. }  => span,
-            Self::InvalidEscape { span, .. }       => span,
-            Self::NumberOverflow { span, .. }      => span,
+            Self::UnexpectedChar { span, .. } => span,
+            Self::UnterminatedString { span, .. } => span,
+            Self::UnterminatedChar { span, .. } => span,
+            Self::InvalidCharLiteral { span, .. } => span,
+            Self::InvalidEscape { span, .. } => span,
+            Self::NumberOverflow { span, .. } => span,
             Self::UnterminatedComment { span, .. } => span,
         }
     }
 
     pub fn file(&self) -> &str {
         match self {
-            Self::UnexpectedChar { file, .. }      => file,
-            Self::UnterminatedString { file, .. }  => file,
-            Self::UnterminatedChar { file, .. }    => file,
-            Self::InvalidCharLiteral { file, .. }  => file,
-            Self::InvalidEscape { file, .. }       => file,
-            Self::NumberOverflow { file, .. }      => file,
+            Self::UnexpectedChar { file, .. } => file,
+            Self::UnterminatedString { file, .. } => file,
+            Self::UnterminatedChar { file, .. } => file,
+            Self::InvalidCharLiteral { file, .. } => file,
+            Self::InvalidEscape { file, .. } => file,
+            Self::NumberOverflow { file, .. } => file,
             Self::UnterminatedComment { file, .. } => file,
         }
     }
@@ -131,7 +114,7 @@ impl LexError {
 
         let hint_line = match hint {
             Some(h) => format!("\n  \u{1F4A1} Hint: {}", h),
-            None    => String::new(),
+            None => String::new(),
         };
 
         format!(
@@ -143,7 +126,9 @@ impl LexError {
              \u{2502}\n\
              \u{2502}  {message}{hint_line}\n\
              \u{2570}\u{2500}\n",
-            self.file(), span.line, span.col
+            self.file(),
+            span.line,
+            span.col
         )
     }
 }
@@ -151,20 +136,35 @@ impl LexError {
 impl std::fmt::Display for LexError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnexpectedChar { ch, span, .. } =>
-                write!(f, "unexpected character '{}' at {}:{}", ch, span.line, span.col),
-            Self::UnterminatedString { span, .. } =>
-                write!(f, "unterminated string at {}:{}", span.line, span.col),
-            Self::UnterminatedChar { span, .. } =>
-                write!(f, "unterminated char literal at {}:{}", span.line, span.col),
-            Self::InvalidCharLiteral { content, span, .. } =>
-                write!(f, "invalid char literal '{}' at {}:{}", content, span.line, span.col),
-            Self::InvalidEscape { ch, span, .. } =>
-                write!(f, "unknown escape sequence '\\{}' at {}:{}", ch, span.line, span.col),
-            Self::NumberOverflow { raw, span, .. } =>
-                write!(f, "number '{}' overflows i64 at {}:{}", raw, span.line, span.col),
-            Self::UnterminatedComment { span, .. } =>
-                write!(f, "unterminated comment at {}:{}", span.line, span.col),
+            Self::UnexpectedChar { ch, span, .. } => write!(
+                f,
+                "unexpected character '{}' at {}:{}",
+                ch, span.line, span.col
+            ),
+            Self::UnterminatedString { span, .. } => {
+                write!(f, "unterminated string at {}:{}", span.line, span.col)
+            }
+            Self::UnterminatedChar { span, .. } => {
+                write!(f, "unterminated char literal at {}:{}", span.line, span.col)
+            }
+            Self::InvalidCharLiteral { content, span, .. } => write!(
+                f,
+                "invalid char literal '{}' at {}:{}",
+                content, span.line, span.col
+            ),
+            Self::InvalidEscape { ch, span, .. } => write!(
+                f,
+                "unknown escape sequence '\\{}' at {}:{}",
+                ch, span.line, span.col
+            ),
+            Self::NumberOverflow { raw, span, .. } => write!(
+                f,
+                "number '{}' overflows i64 at {}:{}",
+                raw, span.line, span.col
+            ),
+            Self::UnterminatedComment { span, .. } => {
+                write!(f, "unterminated comment at {}:{}", span.line, span.col)
+            }
         }
     }
 }
@@ -176,9 +176,13 @@ mod error_tests {
     use super::*;
     use crate::lexer::token::Span;
 
-    fn dummy_span() -> Span { Span::new(0, 1, 1, 1) }
+    fn dummy_span() -> Span {
+        Span::new(0, 1, 1, 1)
+    }
 
-    fn file() -> Rc<str> { Rc::from("test.lyz") }
+    fn file() -> Rc<str> {
+        Rc::from("test.lyz")
+    }
 
     #[test]
     fn test_unexpected_char_display() {

@@ -35,8 +35,12 @@ fn main() {
     assert!(kinds.iter().any(|k| **k == TokenKind::Struct));
     assert!(kinds.iter().any(|k| **k == TokenKind::Fn));
     assert!(kinds.iter().any(|k| **k == TokenKind::Return));
-    assert!(kinds.iter().any(|k| matches!(k, TokenKind::Identifier(n) if n.as_ref() == "distance")));
-    assert!(kinds.iter().any(|k| matches!(k, TokenKind::FloatLiteral(f) if *f == 3.0)));
+    assert!(kinds
+        .iter()
+        .any(|k| matches!(k, TokenKind::Identifier(n) if n.as_ref() == "distance")));
+    assert!(kinds
+        .iter()
+        .any(|k| matches!(k, TokenKind::FloatLiteral(f) if *f == 3.0)));
     assert!(**kinds.last().unwrap() == TokenKind::EOF);
 }
 
