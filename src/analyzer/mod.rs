@@ -471,133 +471,239 @@ impl Analyzer {
     }
 
     // ══════════════════════════════════════════════
-    //   EXPRESSION ANALYSIS (expanded in a later step)
+    //   EXPRESSION ANALYSIS
     // ══════════════════════════════════════════════
 
-    fn analyze_expr(&mut self, expr: &Expr) {
+    pub(super) fn analyze_expr(&mut self, expr: &Expr) {
         match expr {
+            // Literals are always valid
             Expr::Int(_)
             | Expr::Float(_)
             | Expr::Str(_)
             | Expr::Bool(_)
             | Expr::Char(_)
             | Expr::Null(_) => {}
-            Expr::Identifier(id) => {
-                if id.name == "self" {
-                    if !self.ctx.in_impl {
-                        self.push_error(SemanticError::SelfOutsideImpl {
-                            span: id.span,
-                            file: self.file.clone(),
-                        });
-                    }
-                } else if !self.symbols.is_defined(&id.name) {
-                    self.push_error(SemanticError::UndefinedName {
-                        name: id.name.clone(),
-                        span: id.span,
-                        file: self.file.clone(),
-                        suggestion: None,
-                    });
-                }
-            }
+
+            // Array: check every element
             Expr::Array(a) => {
-                for el in &a.elements {
-                    self.analyze_expr(el);
+                for elem in &a.elements {
+                    self.analyze_expr(elem);
                 }
             }
-            Expr::StructInit(si) => {
-                for (_, val) in &si.fields {
+
+            // Struct init: check the values
+            Expr::StructInit(s) => {
+                for (_, val) in &s.fields {
                     self.analyze_expr(val);
                 }
             }
+
+            // Identifier: must be declared
+            Expr::Identifier(ident) => {
+                self.check_name(&ident.name, ident.span);
+            }
+
+            // Binary: check both sides
             Expr::Binary(b) => {
                 self.analyze_expr(&b.left);
                 self.analyze_expr(&b.right);
             }
-            Expr::Unary(u) => self.analyze_expr(&u.operand),
+
+            // Unary: check operand
+            Expr::Unary(u) => {
+                self.analyze_expr(&u.operand);
+            }
+
+            // Assignment: check target is mutable, check value
             Expr::Assign(a) => {
-                self.analyze_expr(&a.target);
+                self.check_assign_target(&a.target);
                 self.analyze_expr(&a.value);
             }
+
+            // Function call: check callee + arg count
             Expr::Call(c) => {
-                if let Expr::Identifier(id) = &*c.callee {
-                    if !self.symbols.is_defined(&id.name) {
-                        self.push_error(SemanticError::UndefinedName {
-                            name: id.name.clone(),
-                            span: id.span,
-                            file: self.file.clone(),
-                            suggestion: None,
-                        });
-                    }
-                }
+                self.analyze_expr(&c.callee);
                 for arg in &c.args {
                     self.analyze_expr(&arg.value);
                 }
+
+                // Check arg count if calling a known function by name
+                if let Expr::Identifier(ident) = &*c.callee {
+                    self.check_call_args(&ident.name, c.args.len(), c.span);
+                }
             }
+
+            // Method call: check object + args
             Expr::MethodCall(m) => {
                 self.analyze_expr(&m.object);
                 for arg in &m.args {
                     self.analyze_expr(&arg.value);
                 }
             }
-            Expr::Field(f) => self.analyze_expr(&f.object),
-            Expr::Index(ix) => {
-                self.analyze_expr(&ix.object);
-                self.analyze_expr(&ix.index);
+
+            // Field access: check object
+            Expr::Field(f) => {
+                self.analyze_expr(&f.object);
+                // Full field validation happens in type phase
             }
+
+            // Index: check object and index
+            Expr::Index(i) => {
+                self.analyze_expr(&i.object);
+                self.analyze_expr(&i.index);
+            }
+
+            // If expression: check condition + branches
             Expr::If(i) => {
                 self.analyze_expr(&i.condition);
                 self.analyze_block(&i.then_branch);
-                if let Some(eb) = &i.else_branch {
-                    self.analyze_block(eb);
+                if let Some(else_block) = &i.else_branch {
+                    self.analyze_block(else_block);
                 }
             }
+
+            // Match expression: check subject + arms
             Expr::Match(m) => {
                 self.analyze_expr(&m.subject);
                 for arm in &m.arms {
                     self.analyze_match_arm(arm);
                 }
             }
-            Expr::Block(b) => self.analyze_block(b),
-            Expr::Propagate(p) => self.analyze_expr(&p.expr),
+
+            // Block expression
+            Expr::Block(b) => {
+                self.analyze_block(b);
+            }
+
+            // Error propagation: ? operator — check inner
+            Expr::Propagate(p) => {
+                self.analyze_expr(&p.expr);
+            }
+
+            // Null coalesce: check both sides
             Expr::NullCoalesce(n) => {
                 self.analyze_expr(&n.left);
                 self.analyze_expr(&n.right);
             }
-            Expr::Cast(ct) => self.analyze_expr(&ct.expr),
+
+            // Cast: check inner expression
+            Expr::Cast(c) => {
+                self.analyze_expr(&c.expr);
+            }
+
+            // Range: check start and end
             Expr::Range(r) => {
                 self.analyze_expr(&r.start);
                 self.analyze_expr(&r.end);
             }
-            Expr::Closure(cl) => {
-                self.symbols.push(ScopeKind::Block);
-                for param in &cl.params {
-                    if param.is_self && !self.ctx.in_impl {
-                        self.push_error(SemanticError::SelfOutsideImpl {
-                            span: param.span,
-                            file: self.file.clone(),
-                        });
-                        continue;
-                    }
+
+            // Closure: open scope, register params, analyze body
+            Expr::Closure(c) => {
+                self.symbols.push(ScopeKind::Function);
+                for param in &c.params {
                     if !param.is_self {
-                        self.symbols.define(
-                            param.name.clone(),
-                            Symbol::Variable(VariableSymbol {
-                                name: param.name.clone(),
-                                mutable: false,
-                                type_annotation: param.param_type.clone(),
-                                defined_at: param.span,
-                                is_param: true,
-                            }),
-                        );
+                        let sym = Symbol::Variable(VariableSymbol {
+                            name: param.name.clone(),
+                            mutable: false,
+                            type_annotation: param.param_type.clone(),
+                            defined_at: param.span,
+                            is_param: true,
+                        });
+                        self.symbols.define(param.name.clone(), sym);
                     }
                 }
-                match &cl.body {
+                match &c.body {
                     FnBody::Block(b) => self.analyze_block(b),
                     FnBody::Arrow(e) => self.analyze_expr(e),
                 }
                 self.symbols.pop();
             }
         }
+    }
+
+    // ── EXPRESSION HELPERS ───────────────────────────────────
+
+    /// Check that a name is defined, emit error if not
+    fn check_name(&mut self, name: &str, span: Span) {
+        if name == "self" {
+            if !self.ctx.in_impl {
+                self.push_error(SemanticError::SelfOutsideImpl {
+                    span,
+                    file: self.file.clone(),
+                });
+            }
+            return;
+        }
+        if !self.symbols.is_defined(name) {
+            let suggestion = self.find_similar_name(name);
+            self.push_error(SemanticError::UndefinedName {
+                name: name.to_string(),
+                span,
+                file: self.file.clone(),
+                suggestion,
+            });
+        }
+    }
+
+    /// Check that an assignment target is mutable
+    fn check_assign_target(&mut self, target: &Expr) {
+        match target {
+            Expr::Identifier(ident) => {
+                self.check_name(&ident.name, ident.span);
+                if let Some(Symbol::Variable(v)) = self.symbols.lookup(&ident.name) {
+                    if !v.mutable && !v.is_param {
+                        let defined_at = v.defined_at;
+                        let name = v.name.clone();
+                        self.push_error(SemanticError::ImmutableAssignment {
+                            name,
+                            defined_at,
+                            span: ident.span,
+                            file: self.file.clone(),
+                        });
+                    }
+                }
+            }
+            // Field and index access are always mutable targets
+            Expr::Field(f) => self.analyze_expr(&f.object),
+            Expr::Index(i) => {
+                self.analyze_expr(&i.object);
+                self.analyze_expr(&i.index);
+            }
+            _ => {} // Other invalid targets caught by parser
+        }
+    }
+
+    /// Check function call argument count
+    fn check_call_args(&mut self, name: &str, got: usize, span: Span) {
+        if let Some(sym) = self.symbols.lookup(name) {
+            if let Some(expected) = sym.param_count() {
+                if expected != got {
+                    self.push_error(SemanticError::WrongArgCount {
+                        name: name.to_string(),
+                        expected,
+                        got,
+                        span,
+                        file: self.file.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Find a similar name (for "did you mean X?" suggestions)
+    /// Uses simple edit distance — if a name differs by 1-2 chars, suggest it
+    fn find_similar_name(&self, target: &str) -> Option<String> {
+        let visible = self.symbols.all_visible_names();
+        let mut best: Option<(String, usize)> = None;
+
+        for name in visible {
+            let dist = levenshtein_distance(target, &name);
+            if (1..=2).contains(&dist) && best.as_ref().map(|(_, d)| dist < *d).unwrap_or(true) {
+                best = Some((name, dist));
+            }
+        }
+
+        best.map(|(name, _)| name)
     }
 
     // ══════════════════════════════════════════════
@@ -624,6 +730,36 @@ impl Analyzer {
     fn push_error(&mut self, err: SemanticError) {
         self.errors.push(err);
     }
+}
+
+/// Simple Levenshtein edit distance for "did you mean?" suggestions
+fn levenshtein_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (m, n) = (a.len(), b.len());
+
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
+
+    let mut prev_row: Vec<usize> = (0..=n).collect();
+
+    for (i, ac) in a.iter().enumerate() {
+        let mut cur_row = vec![0usize; n + 1];
+        cur_row[0] = i + 1;
+        for (j, bc) in b.iter().enumerate() {
+            cur_row[j + 1] = if ac == bc {
+                prev_row[j]
+            } else {
+                1 + prev_row[j + 1].min(cur_row[j]).min(prev_row[j])
+            };
+        }
+        prev_row = cur_row;
+    }
+    prev_row[n]
 }
 
 #[cfg(test)]
@@ -887,5 +1023,121 @@ mod statement_analysis_tests {
         let errs = analyze("fn f() { if true { print(a) } else { print(b) } }");
         // Both a and b are undefined — should get 2 errors
         assert!(errs.len() >= 2);
+    }
+}
+
+#[cfg(test)]
+mod expr_analysis_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn analyze(src: &str) -> SemanticErrors {
+        let tokens = Lexer::tokenize(src, "t.lyz").unwrap();
+        let (prog, _) = Parser::new(tokens, "t.lyz", src).parse().unwrap();
+        Analyzer::new(src, "t.lyz").analyze(&prog).0
+    }
+
+    #[test]
+    fn test_undefined_variable() {
+        let errs = analyze("fn f() { let y = undeclared + 1 }");
+        assert!(!errs.is_empty());
+        assert!(
+            matches!(&errs.0[0], SemanticError::UndefinedName { name, .. } if name == "undeclared")
+        );
+    }
+
+    #[test]
+    fn test_defined_variable_ok() {
+        assert!(analyze("fn f() { let x = 1 let y = x + 1 }").is_empty());
+    }
+
+    #[test]
+    fn test_wrong_arg_count_too_many() {
+        let errs =
+            analyze("fn add(a: int, b: int) -> int { return a + b }\nfn f() { add(1, 2, 3) }");
+        assert!(!errs.is_empty());
+        assert!(matches!(
+            &errs.0[0],
+            SemanticError::WrongArgCount {
+                expected: 2,
+                got: 3,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_wrong_arg_count_too_few() {
+        let errs = analyze("fn add(a: int, b: int) -> int { return a + b }\nfn f() { add(1) }");
+        assert!(!errs.is_empty());
+        assert!(matches!(
+            &errs.0[0],
+            SemanticError::WrongArgCount {
+                expected: 2,
+                got: 1,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_correct_arg_count_ok() {
+        assert!(
+            analyze("fn add(a: int, b: int) -> int { return a + b }\nfn f() { add(1, 2) }")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_immutable_assignment() {
+        let errs = analyze("fn f() { let x = 1 x = 2 }");
+        assert!(!errs.is_empty());
+        assert!(
+            matches!(&errs.0[0], SemanticError::ImmutableAssignment { name, .. } if name == "x")
+        );
+    }
+
+    #[test]
+    fn test_mut_assignment_ok() {
+        assert!(analyze("fn f() { let mut x = 1 x = 2 }").is_empty());
+    }
+
+    #[test]
+    fn test_did_you_mean_suggestion() {
+        let errs = analyze("fn f() { let userName = 1 print(userNme) }");
+        if let SemanticError::UndefinedName { suggestion, .. } = &errs.0[0] {
+            assert!(suggestion.as_deref() == Some("userName"));
+        }
+    }
+
+    #[test]
+    fn test_method_call_object_analyzed() {
+        // 'unknown' object should be flagged
+        let errs = analyze("fn f() { unknown.method() }");
+        assert!(!errs.is_empty());
+        assert!(
+            matches!(&errs.0[0], SemanticError::UndefinedName { name, .. } if name == "unknown")
+        );
+    }
+
+    #[test]
+    fn test_nested_expr_all_checked() {
+        // Both 'a' and 'b' are undefined — should get errors for both
+        let errs = analyze("fn f() { let _ = a + b }");
+        assert!(errs.len() >= 2);
+    }
+
+    #[test]
+    fn test_builtin_print_no_error() {
+        assert!(analyze("fn f() { print(42) }").is_empty());
+    }
+
+    #[test]
+    fn test_levenshtein_distance() {
+        assert_eq!(levenshtein_distance("hello", "hello"), 0);
+        assert_eq!(levenshtein_distance("hello", "helo"), 1);
+        assert_eq!(levenshtein_distance("hello", "world"), 4);
+        assert_eq!(levenshtein_distance("", "abc"), 3);
     }
 }
