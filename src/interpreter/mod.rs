@@ -66,6 +66,9 @@ impl Interpreter {
                     let value = self.eval_expr(&c.value)?;
                     self.env.define(&c.name, value);
                 }
+                Declaration::Statement(s) => {
+                    self.eval_statement(s)?;
+                }
                 _ => {}
             }
         }
@@ -113,11 +116,217 @@ impl Interpreter {
                 let operand = self.eval_expr(&un.operand)?;
                 self.eval_unary(un.op, operand)
             }
+            Expr::If(if_expr) => {
+                let cond = self.eval_expr(&if_expr.condition)?;
+                if cond.is_truthy() {
+                    self.eval_block(&if_expr.then_branch)
+                } else {
+                    match &if_expr.else_branch {
+                        Some(b) => self.eval_block(b),
+                        None => Ok(Value::Void),
+                    }
+                }
+            }
+            Expr::Match(m) => {
+                let subject = self.eval_expr(&m.subject)?;
+                self.eval_match_arms(subject, &m.arms)
+            }
+            Expr::Block(b) => self.eval_block(b),
             _ => Err(RuntimeError::NotImplemented {
                 feature: "this expression".to_string(),
                 span: expr.span(),
             }),
         }
+    }
+
+    /// Evaluate a block: fresh scope, run statements, propagate signals.
+    fn eval_block(&mut self, block: &Block) -> Result<Value, RuntimeError> {
+        self.env.push_scope();
+        let mut result = Value::Void;
+        for stmt in &block.statements {
+            result = self.eval_statement(stmt)?;
+            if result.is_signal() {
+                break;
+            }
+        }
+        self.env.pop_scope();
+        Ok(result)
+    }
+
+    fn eval_statement(&mut self, stmt: &Statement) -> Result<Value, RuntimeError> {
+        match stmt {
+            Statement::Expression(e) => self.eval_expr(&e.expr),
+            Statement::Let(d) => {
+                let value = self.eval_expr(&d.value)?;
+                self.env.define(&d.name, value);
+                Ok(Value::Void)
+            }
+            Statement::Const(c) => {
+                let value = self.eval_expr(&c.value)?;
+                self.env.define(&c.name, value);
+                Ok(Value::Void)
+            }
+            Statement::Return(r) => {
+                let value = match &r.value {
+                    Some(e) => self.eval_expr(e)?,
+                    None => Value::Void,
+                };
+                Ok(Value::Return(Box::new(value)))
+            }
+            Statement::If(if_stmt) => {
+                let cond = self.eval_expr(&if_stmt.condition)?;
+                if cond.is_truthy() {
+                    self.eval_block(&if_stmt.then_branch)
+                } else {
+                    let mut result = Value::Void;
+                    let mut matched = false;
+                    for branch in &if_stmt.else_if_branches {
+                        if self.eval_expr(&branch.condition)?.is_truthy() {
+                            result = self.eval_block(&branch.body)?;
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if !matched {
+                        if let Some(b) = &if_stmt.else_branch {
+                            result = self.eval_block(b)?;
+                        }
+                    }
+                    Ok(result)
+                }
+            }
+            Statement::While(w) => {
+                let mut result = Value::Void;
+                while self.eval_expr(&w.condition)?.is_truthy() {
+                    let r = self.eval_block(&w.body)?;
+                    if r.is_signal() {
+                        match r {
+                            Value::Break => break,
+                            signal => {
+                                result = signal;
+                                break;
+                            }
+                        }
+                    } else {
+                        result = r;
+                    }
+                }
+                Ok(result)
+            }
+            Statement::For(f) => {
+                let iterable = self.eval_expr(&f.iterable)?;
+                let mut result = Value::Void;
+                match iterable {
+                    Value::Array(items) => {
+                        for item in items {
+                            self.env.push_scope();
+                            self.env.define(&f.variable, item);
+                            let r = self.eval_block(&f.body)?;
+                            self.env.pop_scope();
+                            if r.is_signal() {
+                                match r {
+                                    Value::Break => break,
+                                    signal => {
+                                        result = signal;
+                                        break;
+                                    }
+                                }
+                            } else {
+                                result = r;
+                            }
+                        }
+                    }
+                    Value::Str(s) => {
+                        for ch in s.chars() {
+                            self.env.push_scope();
+                            self.env.define(&f.variable, Value::Char(ch));
+                            let r = self.eval_block(&f.body)?;
+                            self.env.pop_scope();
+                            if r.is_signal() {
+                                match r {
+                                    Value::Break => break,
+                                    signal => {
+                                        result = signal;
+                                        break;
+                                    }
+                                }
+                            } else {
+                                result = r;
+                            }
+                        }
+                    }
+                    other => {
+                        return Err(RuntimeError::TypeError {
+                            expected: "iterable (array or string)".to_string(),
+                            got: other.type_name().to_string(),
+                        });
+                    }
+                }
+                Ok(result)
+            }
+            Statement::Loop(l) => {
+                let mut result = Value::Void;
+                loop {
+                    let r = self.eval_block(&l.body)?;
+                    if r.is_signal() {
+                        match r {
+                            Value::Break => break,
+                            signal => {
+                                result = signal;
+                                break;
+                            }
+                        }
+                    } else {
+                        result = r;
+                    }
+                }
+                Ok(result)
+            }
+            Statement::Break(_) => Ok(Value::Break),
+            Statement::Continue(_) => Ok(Value::Continue),
+            Statement::Match(m) => {
+                let subject = self.eval_expr(&m.subject)?;
+                self.eval_match_arms(subject, &m.arms)
+            }
+            Statement::Spawn(sp) => self.eval_block(&sp.body),
+            Statement::Block(b) => self.eval_block(b),
+        }
+    }
+
+    /// Shared arm dispatch for `match` statements and expressions.
+    fn eval_match_arms(
+        &mut self,
+        subject: Value,
+        arms: &[MatchArm],
+    ) -> Result<Value, RuntimeError> {
+        self.env.push_scope();
+        let mut result = Value::Void;
+        for arm in arms {
+            if pattern_matches(&arm.pattern, &subject) {
+                if let Some(guard) = &arm.guard {
+                    if !self.eval_expr(guard)?.is_truthy() {
+                        continue;
+                    }
+                }
+                bind_pattern(&mut self.env, &arm.pattern, subject.clone());
+                result = match &arm.body {
+                    MatchBody::Expr(e) => self.eval_expr(e)?,
+                    MatchBody::Block(b) => {
+                        let mut r = Value::Void;
+                        for stmt in &b.statements {
+                            r = self.eval_statement(stmt)?;
+                            if r.is_signal() {
+                                break;
+                            }
+                        }
+                        r
+                    }
+                };
+                break;
+            }
+        }
+        self.env.pop_scope();
+        Ok(result)
     }
 
     fn eval_binary(
@@ -234,6 +443,51 @@ impl Interpreter {
                 got: "unsupported type".to_string(),
             }),
         }
+    }
+}
+
+/// Does `value` match `pattern`?
+fn pattern_matches(pattern: &Pattern, value: &Value) -> bool {
+    match pattern {
+        Pattern::Wildcard(_) => true,
+        Pattern::Binding(_) => true,
+        Pattern::Literal(lit) => match &lit.value {
+            LiteralValue::Int(i) => matches!(value, Value::Int(v) if v == i),
+            LiteralValue::Float(f) => matches!(value, Value::Float(v) if v == f),
+            LiteralValue::Str(s) => matches!(value, Value::Str(v) if v == s),
+            LiteralValue::Bool(b) => matches!(value, Value::Bool(v) if v == b),
+            LiteralValue::Char(c) => matches!(value, Value::Char(v) if v == c),
+            LiteralValue::Null => matches!(value, Value::Null),
+        },
+        Pattern::EnumVariant(ev) => match value {
+            Value::Struct(name, _) => name == &ev.variant_name,
+            _ => false,
+        },
+        Pattern::Or(o) => o.alternatives.iter().any(|p| pattern_matches(p, value)),
+    }
+}
+
+/// Define pattern bindings in `env`. Enum variants bind positionally from
+/// their field list; `Or` patterns bind the first alternative only.
+fn bind_pattern(env: &mut Environment, pattern: &Pattern, value: Value) {
+    match pattern {
+        Pattern::Binding(bp) => {
+            env.define(&bp.name, value);
+        }
+        Pattern::EnumVariant(ev) => {
+            if let Value::Struct(_, fields) = value {
+                for (i, sub) in ev.bindings.iter().enumerate() {
+                    let field_value = fields.get(i).map(|(_, v)| v.clone()).unwrap_or(Value::Null);
+                    bind_pattern(env, sub, field_value);
+                }
+            }
+        }
+        Pattern::Or(o) => {
+            if let Some(first) = o.alternatives.first() {
+                bind_pattern(env, first, value);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -603,5 +857,319 @@ mod interpreter_tests {
             i.eval_expr(&e),
             Err(RuntimeError::NotImplemented { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod control_flow_tests {
+    use super::*;
+
+    fn s() -> Span {
+        Span::dummy()
+    }
+
+    fn int_lit(v: i64) -> Expr {
+        Expr::Int(IntLit {
+            value: v,
+            span: s(),
+        })
+    }
+    fn bool_lit(v: bool) -> Expr {
+        Expr::Bool(BoolLit {
+            value: v,
+            span: s(),
+        })
+    }
+    fn ident(name: &str) -> Expr {
+        Expr::Identifier(IdentExpr {
+            name: name.to_string(),
+            span: s(),
+        })
+    }
+    fn block(stmts: Vec<Statement>) -> Block {
+        Block {
+            statements: stmts,
+            span: s(),
+        }
+    }
+    fn expr_stmt(e: Expr) -> Statement {
+        Statement::Expression(ExprStmt { expr: e, span: s() })
+    }
+    fn let_stmt(name: &str, e: Expr) -> Statement {
+        Statement::Let(LetDecl {
+            name: name.to_string(),
+            mutable: false,
+            type_annotation: None,
+            value: e,
+            span: s(),
+        })
+    }
+    fn return_stmt(e: Option<Expr>) -> Statement {
+        Statement::Return(ReturnStmt {
+            value: e,
+            span: s(),
+        })
+    }
+    fn break_stmt() -> Statement {
+        Statement::Break(BreakStmt {
+            label: None,
+            span: s(),
+        })
+    }
+    fn continue_stmt() -> Statement {
+        Statement::Continue(ContinueStmt {
+            label: None,
+            span: s(),
+        })
+    }
+
+    #[test]
+    fn test_return_produces_signal() {
+        let mut i = Interpreter::new();
+        let r = i.eval_statement(&return_stmt(Some(int_lit(5)))).unwrap();
+        assert!(matches!(r, Value::Return(v) if matches!(*v, Value::Int(5))));
+    }
+
+    #[test]
+    fn test_return_void_signal() {
+        let mut i = Interpreter::new();
+        let r = i.eval_statement(&return_stmt(None)).unwrap();
+        assert!(matches!(r, Value::Return(v) if matches!(*v, Value::Void)));
+    }
+
+    #[test]
+    fn test_if_true_takes_then_branch() {
+        let mut i = Interpreter::new();
+        let stmt = Statement::If(IfStmt {
+            condition: bool_lit(true),
+            then_branch: block(vec![expr_stmt(int_lit(1))]),
+            else_if_branches: vec![],
+            else_branch: Some(block(vec![expr_stmt(int_lit(2))])),
+            span: s(),
+        });
+        assert_eq!(i.eval_statement(&stmt).unwrap(), Value::Int(1));
+    }
+
+    #[test]
+    fn test_if_false_takes_else_branch() {
+        let mut i = Interpreter::new();
+        let stmt = Statement::If(IfStmt {
+            condition: bool_lit(false),
+            then_branch: block(vec![expr_stmt(int_lit(1))]),
+            else_if_branches: vec![],
+            else_branch: Some(block(vec![expr_stmt(int_lit(2))])),
+            span: s(),
+        });
+        assert_eq!(i.eval_statement(&stmt).unwrap(), Value::Int(2));
+    }
+
+    #[test]
+    fn test_if_else_if_chain() {
+        let mut i = Interpreter::new();
+        let stmt = Statement::If(IfStmt {
+            condition: bool_lit(false),
+            then_branch: block(vec![expr_stmt(int_lit(1))]),
+            else_if_branches: vec![ElseIfBranch {
+                condition: bool_lit(true),
+                body: block(vec![expr_stmt(int_lit(3))]),
+                span: s(),
+            }],
+            else_branch: Some(block(vec![expr_stmt(int_lit(2))])),
+            span: s(),
+        });
+        assert_eq!(i.eval_statement(&stmt).unwrap(), Value::Int(3));
+    }
+
+    #[test]
+    fn test_block_scope_isolation() {
+        let mut i = Interpreter::new();
+        let b = block(vec![let_stmt("x", int_lit(10)), expr_stmt(ident("x"))]);
+        assert_eq!(i.eval_block(&b).unwrap(), Value::Int(10));
+        assert!(!i.env.is_defined("x"));
+    }
+
+    #[test]
+    fn test_while_false_skips_body() {
+        let mut i = Interpreter::new();
+        let stmt = Statement::While(WhileStmt {
+            condition: bool_lit(false),
+            body: block(vec![expr_stmt(int_lit(1))]),
+            span: s(),
+        });
+        assert_eq!(i.eval_statement(&stmt).unwrap(), Value::Void);
+    }
+
+    #[test]
+    fn test_while_true_break_terminates() {
+        let mut i = Interpreter::new();
+        let stmt = Statement::While(WhileStmt {
+            condition: bool_lit(true),
+            body: block(vec![break_stmt()]),
+            span: s(),
+        });
+        assert_eq!(i.eval_statement(&stmt).unwrap(), Value::Void);
+    }
+
+    #[test]
+    fn test_loop_break_terminates() {
+        let mut i = Interpreter::new();
+        let stmt = Statement::Loop(LoopStmt {
+            body: block(vec![break_stmt()]),
+            label: None,
+            span: s(),
+        });
+        assert_eq!(i.eval_statement(&stmt).unwrap(), Value::Void);
+    }
+
+    #[test]
+    fn test_continue_returns_signal() {
+        let mut i = Interpreter::new();
+        let r = i.eval_statement(&continue_stmt()).unwrap();
+        assert!(matches!(r, Value::Continue));
+    }
+
+    #[test]
+    fn test_for_over_array() {
+        let mut i = Interpreter::new();
+        let stmt = Statement::For(ForStmt {
+            variable: "item".to_string(),
+            iterable: Expr::Array(ArrayLit {
+                elements: vec![int_lit(1), int_lit(2), int_lit(3)],
+                span: s(),
+            }),
+            body: block(vec![expr_stmt(ident("item"))]),
+            span: s(),
+        });
+        assert_eq!(i.eval_statement(&stmt).unwrap(), Value::Int(3));
+        assert!(!i.env.is_defined("item"));
+    }
+
+    #[test]
+    fn test_for_over_string() {
+        let mut i = Interpreter::new();
+        let stmt = Statement::For(ForStmt {
+            variable: "ch".to_string(),
+            iterable: Expr::Str(StrLit {
+                value: "ab".to_string(),
+                span: s(),
+            }),
+            body: block(vec![expr_stmt(ident("ch"))]),
+            span: s(),
+        });
+        assert_eq!(i.eval_statement(&stmt).unwrap(), Value::Char('b'));
+    }
+
+    #[test]
+    fn test_for_wrong_iterable() {
+        let mut i = Interpreter::new();
+        let stmt = Statement::For(ForStmt {
+            variable: "x".to_string(),
+            iterable: int_lit(5),
+            body: block(vec![]),
+            span: s(),
+        });
+        assert!(matches!(
+            i.eval_statement(&stmt),
+            Err(RuntimeError::TypeError { .. })
+        ));
+    }
+
+    #[test]
+    fn test_match_binds_variable() {
+        let mut i = Interpreter::new();
+        let stmt = Statement::Match(MatchStmt {
+            subject: int_lit(42),
+            arms: vec![MatchArm {
+                pattern: Pattern::Binding(BindingPattern {
+                    name: "n".to_string(),
+                    mutable: false,
+                    span: s(),
+                }),
+                guard: None,
+                body: MatchBody::Expr(ident("n")),
+                span: s(),
+            }],
+            span: s(),
+        });
+        assert_eq!(i.eval_statement(&stmt).unwrap(), Value::Int(42));
+        assert!(!i.env.is_defined("n"));
+    }
+
+    #[test]
+    fn test_match_wildcard_fallback() {
+        let mut i = Interpreter::new();
+        let stmt = Statement::Match(MatchStmt {
+            subject: int_lit(7),
+            arms: vec![
+                MatchArm {
+                    pattern: Pattern::Literal(LiteralPattern {
+                        value: LiteralValue::Int(1),
+                        span: s(),
+                    }),
+                    guard: None,
+                    body: MatchBody::Expr(int_lit(100)),
+                    span: s(),
+                },
+                MatchArm {
+                    pattern: Pattern::Wildcard(s()),
+                    guard: None,
+                    body: MatchBody::Expr(int_lit(200)),
+                    span: s(),
+                },
+            ],
+            span: s(),
+        });
+        assert_eq!(i.eval_statement(&stmt).unwrap(), Value::Int(200));
+    }
+
+    #[test]
+    fn test_match_literal_arm() {
+        let mut i = Interpreter::new();
+        let stmt = Statement::Match(MatchStmt {
+            subject: int_lit(1),
+            arms: vec![MatchArm {
+                pattern: Pattern::Literal(LiteralPattern {
+                    value: LiteralValue::Int(1),
+                    span: s(),
+                }),
+                guard: None,
+                body: MatchBody::Expr(int_lit(100)),
+                span: s(),
+            }],
+            span: s(),
+        });
+        assert_eq!(i.eval_statement(&stmt).unwrap(), Value::Int(100));
+    }
+
+    #[test]
+    fn test_if_expression() {
+        let mut i = Interpreter::new();
+        let e = Expr::If(Box::new(IfExpr {
+            condition: bool_lit(true),
+            then_branch: block(vec![expr_stmt(int_lit(1))]),
+            else_branch: Some(block(vec![expr_stmt(int_lit(2))])),
+            span: s(),
+        }));
+        assert_eq!(i.eval_expr(&e).unwrap(), Value::Int(1));
+    }
+
+    #[test]
+    fn test_match_expression() {
+        let mut i = Interpreter::new();
+        let e = Expr::Match(Box::new(MatchExpr {
+            subject: Box::new(int_lit(9)),
+            arms: vec![MatchArm {
+                pattern: Pattern::Binding(BindingPattern {
+                    name: "n".to_string(),
+                    mutable: false,
+                    span: s(),
+                }),
+                guard: None,
+                body: MatchBody::Expr(ident("n")),
+                span: s(),
+            }],
+            span: s(),
+        }));
+        assert_eq!(i.eval_expr(&e).unwrap(), Value::Int(9));
     }
 }
