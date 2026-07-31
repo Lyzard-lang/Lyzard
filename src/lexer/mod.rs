@@ -892,8 +892,8 @@ mod number_tests {
 
     #[test]
     fn test_float() {
-        let tok = lex_one("3.14").unwrap();
-        assert_eq!(tok.kind, TokenKind::FloatLiteral(3.14));
+        let tok = lex_one("3.25").unwrap();
+        assert_eq!(tok.kind, TokenKind::FloatLiteral(3.25));
     }
 
     #[test]

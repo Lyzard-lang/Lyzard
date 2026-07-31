@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn test_is_literal() {
         assert!(TokenKind::IntLiteral(42).is_literal());
-        assert!(TokenKind::FloatLiteral(3.14).is_literal());
+        assert!(TokenKind::FloatLiteral(3.25).is_literal());
         assert!(TokenKind::StringLiteral("hi".to_string()).is_literal());
         assert!(TokenKind::BoolLiteral(true).is_literal());
         assert!(!TokenKind::Let.is_literal());
