@@ -15,6 +15,7 @@ pub enum TokenKind {
     // ── KEYWORDS ─────────────────────────────────────────────
     Let,      // let
     Mut,      // mut
+    Const,    // const
     Fn,       // fn
     Return,   // return
     If,       // if
@@ -109,6 +110,7 @@ impl TokenKind {
             Self::Identifier(_) => "identifier",
             Self::Let => "'let'",
             Self::Mut => "'mut'",
+            Self::Const => "'const'",
             Self::Fn => "'fn'",
             Self::Return => "'return'",
             Self::If => "'if'",
@@ -178,6 +180,7 @@ impl TokenKind {
             self,
             Self::Let
                 | Self::Mut
+                | Self::Const
                 | Self::Fn
                 | Self::Return
                 | Self::If

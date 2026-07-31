@@ -784,6 +784,7 @@ impl Lexer {
         let kind = match slice {
             "let" => TokenKind::Let,
             "mut" => TokenKind::Mut,
+            "const" => TokenKind::Const,
             "fn" => TokenKind::Fn,
             "return" => TokenKind::Return,
             "if" => TokenKind::If,
@@ -1452,6 +1453,7 @@ mod char_ident_tests {
         let keywords = [
             ("let", TokenKind::Let),
             ("mut", TokenKind::Mut),
+            ("const", TokenKind::Const),
             ("fn", TokenKind::Fn),
             ("return", TokenKind::Return),
             ("if", TokenKind::If),
