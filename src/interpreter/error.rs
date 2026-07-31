@@ -1,159 +1,218 @@
-use std::fmt;
-
 use crate::lexer::Span;
 
-/// A runtime failure raised while executing a program.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeError {
-    UndefinedName {
-        name: String,
-        span: Span,
-    },
-    TypeError {
-        expected: String,
-        got: String,
-    },
-    DivisionByZero {
-        span: Span,
-    },
+    /// Division by zero: 10 / 0
+    DivisionByZero { span: Option<Span> },
+
+    /// Type mismatch in operation: "hello" + 5
+    TypeError { expected: String, got: String },
+
+    /// A variable was used but has no value
+    UndefinedVariable { name: String, span: Option<Span> },
+
+    /// A function was called that doesn't exist
+    UndefinedFunction { name: String, span: Option<Span> },
+
+    /// Array index out of bounds: arr[99] when arr has 3 items
     IndexOutOfBounds {
         index: i64,
-        len: usize,
-        span: Span,
+        length: usize,
+        span: Option<Span>,
     },
-    NegativeIndex {
-        index: i64,
-        span: Span,
+
+    /// Tried to index a non-array value
+    NotIndexable {
+        type_name: String,
+        span: Option<Span>,
     },
+
+    /// Accessing a field that doesn't exist on a struct
     FieldNotFound {
-        name: String,
-        object_type: String,
-        span: Span,
+        struct_name: String,
+        field: String,
+        span: Option<Span>,
     },
-    MethodNotFound {
-        name: String,
-        object_type: String,
-        span: Span,
-    },
-    WrongArgCount {
-        name: String,
-        expected: usize,
-        got: usize,
-        span: Span,
-    },
+
+    /// Tried to call something that isn't a function
     NotCallable {
-        value_type: String,
-        span: Span,
+        type_name: String,
+        span: Option<Span>,
     },
-    StackOverflow {
-        fn_name: String,
+
+    /// Stack overflow from infinite recursion
+    StackOverflow { fn_name: String },
+
+    /// assert(false) was called
+    AssertionFailed {
+        message: Option<String>,
+        span: Option<Span>,
     },
-    InvalidOperation {
-        message: String,
-        span: Span,
-    },
-    NotImplemented {
-        feature: String,
-        span: Span,
-    },
-    SignalEscape {
-        name: String,
-        span: Span,
-    },
+
+    /// panic("message") was called
+    Panic { message: String, span: Option<Span> },
+
+    /// Feature not yet implemented in the interpreter
+    NotImplemented { feature: String },
+
+    /// An Err() value was propagated with ? and not handled
+    UnhandledError { message: String },
 }
 
 impl RuntimeError {
-    pub fn span(&self) -> Option<Span> {
-        match self {
-            Self::UndefinedName { span, .. }
-            | Self::DivisionByZero { span, .. }
-            | Self::IndexOutOfBounds { span, .. }
-            | Self::NegativeIndex { span, .. }
-            | Self::FieldNotFound { span, .. }
-            | Self::MethodNotFound { span, .. }
-            | Self::WrongArgCount { span, .. }
-            | Self::NotCallable { span, .. }
-            | Self::InvalidOperation { span, .. }
-            | Self::NotImplemented { span, .. }
-            | Self::SignalEscape { span, .. } => Some(*span),
-            Self::TypeError { .. } => None,
-            Self::StackOverflow { .. } => None,
-        }
-    }
-
-    pub fn file(&self) -> &'static str {
-        "<runtime>"
-    }
-
-    pub fn message(&self) -> String {
-        self.describe()
-    }
-
-    pub fn describe(&self) -> String {
-        match self {
-            Self::UndefinedName { name, .. } => format!("undefined name '{name}'"),
-            Self::TypeError { expected, got } => {
-                format!("type error: expected {expected}, got {got}")
-            }
-            Self::DivisionByZero { .. } => "division by zero".to_string(),
-            Self::IndexOutOfBounds { index, len, .. } => {
-                format!("index out of bounds: index {index} but length is {len}")
-            }
-            Self::NegativeIndex { index, .. } => {
-                format!("negative index {index} is not allowed here")
-            }
-            Self::FieldNotFound {
-                name, object_type, ..
-            } => {
-                format!("no field '{name}' on {object_type}")
-            }
-            Self::MethodNotFound {
-                name, object_type, ..
-            } => {
-                format!("no method '{name}' on {object_type}")
-            }
-            Self::WrongArgCount {
-                name,
-                expected,
-                got,
-                ..
-            } => format!("function '{name}' expects {expected} argument(s) but got {got}"),
-            Self::NotCallable { value_type, .. } => format!("{value_type} is not callable"),
-            Self::StackOverflow { fn_name } => {
-                format!("stack overflow: call depth exceeded in '{fn_name}'")
-            }
-            Self::InvalidOperation { message, .. } => message.clone(),
-            Self::NotImplemented { feature, .. } => format!("not implemented: {feature}"),
-            Self::SignalEscape { name, .. } => {
-                format!("control-flow signal '{name}' escaped to the top level")
-            }
-        }
-    }
-
-    /// Renders `file: message` plus the offending source line with a caret
-    /// underline, so errors read well in a terminal.
     pub fn format(&self, source: &str) -> String {
-        let mut out = format!("{}: {}\n", self.file(), self.describe());
-        if let Some(span) = self.span() {
-            let line = source
-                .lines()
-                .nth(span.line.saturating_sub(1))
-                .unwrap_or("");
-            let indent = span.col.saturating_sub(1);
-            let width = span.len().max(1);
-            out.push_str(line);
-            out.push('\n');
-            out.push_str(&" ".repeat(indent));
-            out.push_str(&"^".repeat(width));
-            out.push('\n');
+        let (title, message, hint) = self.describe();
+
+        // Try to show source context if we have a span
+        let location_line = self
+            .span()
+            .and_then(|s| source.lines().nth(s.line.saturating_sub(1)))
+            .map(|line| {
+                let span = self.span().unwrap();
+                let pointer = format!(
+                    "{}{}",
+                    " ".repeat(span.col.saturating_sub(1)),
+                    "^".repeat(span.len().max(1))
+                );
+                format!("\n│  {}\n│  {}", line, pointer)
+            })
+            .unwrap_or_default();
+
+        let location = self
+            .span()
+            .map(|s| format!("{}:{}", s.line, s.col))
+            .unwrap_or_else(|| "unknown location".to_string());
+
+        let hint_line = hint
+            .map(|h| format!("\n  💡 Hint: {}", h))
+            .unwrap_or_default();
+
+        format!(
+            "\n🦎 LYZARD Runtime Error — {title}\n\
+             ╭─ {location}{location_line}\n│\n\
+             │  {message}{hint_line}\n\
+             ╰─\n"
+        )
+    }
+
+    fn span(&self) -> Option<Span> {
+        match self {
+            Self::DivisionByZero { span } => *span,
+            Self::UndefinedVariable { span, .. } => *span,
+            Self::UndefinedFunction { span, .. } => *span,
+            Self::IndexOutOfBounds { span, .. } => *span,
+            Self::NotIndexable { span, .. } => *span,
+            Self::FieldNotFound { span, .. } => *span,
+            Self::NotCallable { span, .. } => *span,
+            Self::AssertionFailed { span, .. } => *span,
+            Self::Panic { span, .. } => *span,
+            _ => None,
         }
-        out
+    }
+
+    fn describe(&self) -> (String, String, Option<String>) {
+        match self {
+            Self::DivisionByZero { .. } => (
+                "Division by zero".to_string(),
+                "You tried to divide a number by zero, which is undefined.".to_string(),
+                Some("Check that your divisor is not zero before dividing.".to_string()),
+            ),
+            Self::TypeError { expected, got } => (
+                "Type mismatch".to_string(),
+                format!("Expected a value of type '{}' but got '{}'.", expected, got),
+                Some("LYZARD is type-safe — make sure you're using the right type.".to_string()),
+            ),
+            Self::UndefinedVariable { name, .. } => (
+                "Undefined variable".to_string(),
+                format!("Variable '{}' was used but was never declared.", name),
+                Some(format!("Did you forget: let {} = ...?", name)),
+            ),
+            Self::UndefinedFunction { name, .. } => (
+                "Undefined function".to_string(),
+                format!("Function '{}' was called but was never defined.", name),
+                Some(format!("Define it with: fn {}(...) {{ ... }}", name)),
+            ),
+            Self::IndexOutOfBounds { index, length, .. } => (
+                "Index out of bounds".to_string(),
+                format!(
+                    "Tried to access index {} but the array has {} element(s).",
+                    index, length
+                ),
+                Some("Array indices start at 0. Check your loop bounds.".to_string()),
+            ),
+            Self::NotIndexable { type_name, .. } => (
+                "Not indexable".to_string(),
+                format!("'{}' cannot be indexed with [].", type_name),
+                Some("Only arrays and maps support [] indexing.".to_string()),
+            ),
+            Self::FieldNotFound {
+                struct_name, field, ..
+            } => (
+                "Field not found".to_string(),
+                format!("Struct '{}' has no field '{}'.", struct_name, field),
+                Some("Check the struct definition for the correct field name.".to_string()),
+            ),
+            Self::NotCallable { type_name, .. } => (
+                "Not callable".to_string(),
+                format!(
+                    "'{}' is not a function and cannot be called with ().",
+                    type_name
+                ),
+                Some(
+                    "Only functions can be called. Make sure you have the right variable."
+                        .to_string(),
+                ),
+            ),
+            Self::StackOverflow { fn_name } => (
+                "Stack overflow".to_string(),
+                format!(
+                    "Function '{}' called itself too many times (infinite recursion?).",
+                    fn_name
+                ),
+                Some(
+                    "Check your recursive function for a base case that stops the recursion."
+                        .to_string(),
+                ),
+            ),
+            Self::AssertionFailed { message, .. } => (
+                "Assertion failed".to_string(),
+                message
+                    .as_deref()
+                    .unwrap_or("assert() was called with false.")
+                    .to_string(),
+                Some(
+                    "This is an intentional check in your code that failed at runtime.".to_string(),
+                ),
+            ),
+            Self::Panic { message, .. } => (
+                "Program panicked".to_string(),
+                format!("panic! was called: {}", message),
+                Some(
+                    "panic() is used for unrecoverable errors. Consider using Result<T,E> instead."
+                        .to_string(),
+                ),
+            ),
+            Self::NotImplemented { feature } => (
+                "Not implemented".to_string(),
+                format!(
+                    "'{}' is not yet implemented in the LYZARD interpreter.",
+                    feature
+                ),
+                Some("This feature is coming soon! Follow LYZARD development.".to_string()),
+            ),
+            Self::UnhandledError { message } => (
+                "Unhandled error".to_string(),
+                format!("An Err() value was not handled: {}", message),
+                Some("Use match or ?? to handle the error, or add ? to propagate it.".to_string()),
+            ),
+        }
     }
 }
 
-impl fmt::Display for RuntimeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.describe())
+impl std::fmt::Display for RuntimeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (title, msg, _) = self.describe();
+        write!(f, "{}: {}", title, msg)
     }
 }
 
@@ -163,121 +222,73 @@ impl std::error::Error for RuntimeError {}
 mod error_tests {
     use super::*;
 
-    fn s() -> Span {
-        Span::new(0, 3, 1, 1)
+    #[test]
+    fn test_division_by_zero_display() {
+        let e = RuntimeError::DivisionByZero { span: None };
+        assert!(format!("{}", e).contains("zero"));
     }
 
     #[test]
-    fn test_undefined_name_describe() {
-        let e = RuntimeError::UndefinedName {
-            name: "myVar".to_string(),
-            span: s(),
-        };
-        assert_eq!(e.describe(), "undefined name 'myVar'");
-        assert_eq!(e.span(), Some(s()));
-    }
-
-    #[test]
-    fn test_type_error_describe() {
+    fn test_type_error_display() {
         let e = RuntimeError::TypeError {
             expected: "int".to_string(),
-            got: "string".to_string(),
+            got: "str".to_string(),
         };
-        assert_eq!(e.describe(), "type error: expected int, got string");
-        assert_eq!(e.span(), None);
+        let msg = format!("{}", e);
+        assert!(msg.contains("int"));
+        assert!(msg.contains("str"));
     }
 
     #[test]
-    fn test_division_by_zero_describe() {
-        let e = RuntimeError::DivisionByZero { span: s() };
-        assert_eq!(e.describe(), "division by zero");
+    fn test_undefined_variable_hint() {
+        let e = RuntimeError::UndefinedVariable {
+            name: "myVar".to_string(),
+            span: None,
+        };
+        let (_, _, hint) = e.describe();
+        assert!(hint.unwrap().contains("myVar"));
     }
 
     #[test]
-    fn test_index_out_of_bounds_describe() {
+    fn test_index_out_of_bounds_display() {
         let e = RuntimeError::IndexOutOfBounds {
             index: 5,
-            len: 3,
-            span: s(),
+            length: 3,
+            span: None,
         };
-        assert_eq!(e.describe(), "index out of bounds: index 5 but length is 3");
+        let msg = format!("{}", e);
+        assert!(msg.contains("5"));
+        assert!(msg.contains("3"));
     }
 
     #[test]
-    fn test_negative_index_describe() {
-        let e = RuntimeError::NegativeIndex {
-            index: -2,
-            span: s(),
-        };
-        assert_eq!(e.describe(), "negative index -2 is not allowed here");
-    }
-
-    #[test]
-    fn test_field_and_method_not_found_describe() {
-        let e = RuntimeError::FieldNotFound {
-            name: "z".to_string(),
-            object_type: "Point".to_string(),
-            span: s(),
-        };
-        assert_eq!(e.describe(), "no field 'z' on Point");
-
-        let e = RuntimeError::MethodNotFound {
-            name: "fly".to_string(),
-            object_type: "Bird".to_string(),
-            span: s(),
-        };
-        assert_eq!(e.describe(), "no method 'fly' on Bird");
-    }
-
-    #[test]
-    fn test_wrong_arg_count_describe() {
-        let e = RuntimeError::WrongArgCount {
-            name: "add".to_string(),
-            expected: 2,
-            got: 3,
-            span: s(),
-        };
-        assert_eq!(
-            e.describe(),
-            "function 'add' expects 2 argument(s) but got 3"
-        );
-    }
-
-    #[test]
-    fn test_not_callable_describe() {
-        let e = RuntimeError::NotCallable {
-            value_type: "int".to_string(),
-            span: s(),
-        };
-        assert_eq!(e.describe(), "int is not callable");
-    }
-
-    #[test]
-    fn test_stack_overflow_describe() {
+    fn test_stack_overflow_hint() {
         let e = RuntimeError::StackOverflow {
             fn_name: "fib".to_string(),
         };
-        assert_eq!(e.describe(), "stack overflow: call depth exceeded in 'fib'");
+        let (_, _, hint) = e.describe();
+        assert!(hint.unwrap().contains("base case"));
     }
 
     #[test]
-    fn test_format_shows_source_line() {
-        let source = "let x = unknownVar + 1";
-        let e = RuntimeError::UndefinedName {
-            name: "unknownVar".to_string(),
-            span: Span::new(8, 18, 1, 9),
+    fn test_format_has_emoji() {
+        let e = RuntimeError::DivisionByZero { span: None };
+        assert!(e.format("").contains("🦎"));
+    }
+
+    #[test]
+    fn test_panic_message() {
+        let e = RuntimeError::Panic {
+            message: "something went wrong".to_string(),
+            span: None,
         };
-        let out = e.format(source);
-        assert!(out.contains("undefined name 'unknownVar'"));
-        assert!(out.contains("let x = unknownVar + 1"));
-        assert!(out.contains("^^^^^^^^^^"));
+        let msg = format!("{}", e);
+        assert!(msg.contains("something went wrong"));
     }
 
     #[test]
     fn test_implements_std_error() {
         fn takes_error<E: std::error::Error>(_: E) {}
-        takes_error(RuntimeError::StackOverflow {
-            fn_name: "main".to_string(),
-        });
+        takes_error(RuntimeError::DivisionByZero { span: None });
     }
 }

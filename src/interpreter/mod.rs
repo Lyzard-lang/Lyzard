@@ -99,9 +99,9 @@ impl Interpreter {
                 self.env
                     .lookup(&id.name)
                     .cloned()
-                    .ok_or_else(|| RuntimeError::UndefinedName {
+                    .ok_or_else(|| RuntimeError::UndefinedVariable {
                         name: id.name.clone(),
-                        span: id.span,
+                        span: Some(id.span),
                     })
             }
             Expr::Array(arr) => {
@@ -178,9 +178,8 @@ impl Interpreter {
             Expr::Propagate(p) => {
                 let v = self.eval_expr(&p.expr)?;
                 match v {
-                    Value::Err(e) => Err(RuntimeError::InvalidOperation {
-                        message: format!("propagated error: {}", e.to_display_string()),
-                        span: p.span,
+                    Value::Err(e) => Err(RuntimeError::UnhandledError {
+                        message: e.to_display_string(),
                     }),
                     other => Ok(other),
                 }
@@ -200,7 +199,6 @@ impl Interpreter {
             }
             _ => Err(RuntimeError::NotImplemented {
                 feature: "this expression".to_string(),
-                span: expr.span(),
             }),
         }
     }
@@ -233,11 +231,9 @@ impl Interpreter {
             } => {
                 let expected = params.iter().filter(|p| !p.is_self).count();
                 if args.len() != expected {
-                    return Err(RuntimeError::WrongArgCount {
-                        name,
-                        expected,
-                        got: args.len(),
-                        span,
+                    return Err(RuntimeError::TypeError {
+                        expected: format!("{} arguments", expected),
+                        got: args.len().to_string(),
                     });
                 }
 
@@ -258,8 +254,8 @@ impl Interpreter {
                 })
             }
             other => Err(RuntimeError::NotCallable {
-                value_type: other.type_name().to_string(),
-                span,
+                type_name: other.type_name().to_string(),
+                span: Some(span),
             }),
         }
     }
@@ -275,9 +271,9 @@ impl Interpreter {
             Value::Struct { name, fields } => match fields.get(field) {
                 Some(v) => Ok(v.clone()),
                 None => Err(RuntimeError::FieldNotFound {
-                    name: field.to_string(),
-                    object_type: name,
-                    span,
+                    struct_name: name,
+                    field: field.to_string(),
+                    span: Some(span),
                 }),
             },
             other => Err(RuntimeError::TypeError {
@@ -296,8 +292,8 @@ impl Interpreter {
                 if pos < 0 || pos >= len {
                     Err(RuntimeError::IndexOutOfBounds {
                         index: n,
-                        len: items.len(),
-                        span,
+                        length: items.len(),
+                        span: Some(span),
                     })
                 } else {
                     Ok(items[pos as usize].clone())
@@ -310,8 +306,8 @@ impl Interpreter {
                 if pos < 0 || pos >= len {
                     Err(RuntimeError::IndexOutOfBounds {
                         index: n,
-                        len: chars.len(),
-                        span,
+                        length: chars.len(),
+                        span: Some(span),
                     })
                 } else {
                     Ok(Value::Char(chars[pos as usize]))
@@ -336,9 +332,9 @@ impl Interpreter {
                 if self.env.set(&id.name, value.clone()) {
                     Ok(value)
                 } else {
-                    Err(RuntimeError::UndefinedName {
+                    Err(RuntimeError::UndefinedVariable {
                         name: id.name.clone(),
-                        span: id.span,
+                        span: Some(id.span),
                     })
                 }
             }
@@ -351,9 +347,9 @@ impl Interpreter {
                             Ok(value)
                         }
                         None => Err(RuntimeError::FieldNotFound {
-                            name: f.field.clone(),
-                            object_type: name,
-                            span,
+                            struct_name: name,
+                            field: f.field.clone(),
+                            span: Some(span),
                         }),
                     },
                     other => Err(RuntimeError::TypeError {
@@ -372,8 +368,8 @@ impl Interpreter {
                         if pos < 0 || pos >= len {
                             return Err(RuntimeError::IndexOutOfBounds {
                                 index: n,
-                                len: items.len(),
-                                span,
+                                length: items.len(),
+                                span: Some(span),
                             });
                         }
                         items[pos as usize] = value.clone();
@@ -387,7 +383,6 @@ impl Interpreter {
             }
             _ => Err(RuntimeError::NotImplemented {
                 feature: "this assignment target".to_string(),
-                span,
             }),
         }
     }
@@ -469,10 +464,9 @@ impl Interpreter {
         if let Some(fn_val) = self.env.lookup(&method_name).cloned() {
             return self.call_function(fn_val, vec![obj], span);
         }
-        Err(RuntimeError::MethodNotFound {
+        Err(RuntimeError::UndefinedFunction {
             name: method.to_string(),
-            object_type: obj.type_name().to_string(),
-            span,
+            span: Some(span),
         })
     }
 
@@ -729,50 +723,50 @@ impl Interpreter {
 
             (BinaryOp::Div, Value::Int(a), Value::Int(b)) => {
                 if b == 0 {
-                    return Err(RuntimeError::DivisionByZero { span });
+                    return Err(RuntimeError::DivisionByZero { span: Some(span) });
                 }
                 Ok(Value::Int(a / b))
             }
             (BinaryOp::Div, Value::Float(a), Value::Float(b)) => {
                 if b == 0.0 {
-                    return Err(RuntimeError::DivisionByZero { span });
+                    return Err(RuntimeError::DivisionByZero { span: Some(span) });
                 }
                 Ok(Value::Float(a / b))
             }
             (BinaryOp::Div, Value::Int(a), Value::Float(b)) => {
                 if b == 0.0 {
-                    return Err(RuntimeError::DivisionByZero { span });
+                    return Err(RuntimeError::DivisionByZero { span: Some(span) });
                 }
                 Ok(Value::Float(a as f64 / b))
             }
             (BinaryOp::Div, Value::Float(a), Value::Int(b)) => {
                 if b == 0 {
-                    return Err(RuntimeError::DivisionByZero { span });
+                    return Err(RuntimeError::DivisionByZero { span: Some(span) });
                 }
                 Ok(Value::Float(a / b as f64))
             }
 
             (BinaryOp::Mod, Value::Int(a), Value::Int(b)) => {
                 if b == 0 {
-                    return Err(RuntimeError::DivisionByZero { span });
+                    return Err(RuntimeError::DivisionByZero { span: Some(span) });
                 }
                 Ok(Value::Int(a % b))
             }
             (BinaryOp::Mod, Value::Float(a), Value::Float(b)) => {
                 if b == 0.0 {
-                    return Err(RuntimeError::DivisionByZero { span });
+                    return Err(RuntimeError::DivisionByZero { span: Some(span) });
                 }
                 Ok(Value::Float(a % b))
             }
             (BinaryOp::Mod, Value::Int(a), Value::Float(b)) => {
                 if b == 0.0 {
-                    return Err(RuntimeError::DivisionByZero { span });
+                    return Err(RuntimeError::DivisionByZero { span: Some(span) });
                 }
                 Ok(Value::Float(a as f64 % b))
             }
             (BinaryOp::Mod, Value::Float(a), Value::Int(b)) => {
                 if b == 0 {
-                    return Err(RuntimeError::DivisionByZero { span });
+                    return Err(RuntimeError::DivisionByZero { span: Some(span) });
                 }
                 Ok(Value::Float(a % b as f64))
             }
@@ -1021,7 +1015,7 @@ mod interpreter_tests {
         let mut i = interp();
         assert!(matches!(
             i.eval_expr(&ident("nope")),
-            Err(RuntimeError::UndefinedName { .. })
+            Err(RuntimeError::UndefinedVariable { .. })
         ));
     }
 
@@ -1649,7 +1643,7 @@ mod call_access_tests {
             }),
         );
         let r = i.call_function(f, vec![Value::Int(1)], s());
-        assert!(matches!(r, Err(RuntimeError::WrongArgCount { .. })));
+        assert!(matches!(r, Err(RuntimeError::TypeError { .. })));
     }
 
     #[test]
@@ -1806,7 +1800,7 @@ mod call_access_tests {
         });
         assert!(matches!(
             i.eval_expr(&e),
-            Err(RuntimeError::UndefinedName { .. })
+            Err(RuntimeError::UndefinedVariable { .. })
         ));
     }
 
@@ -1873,7 +1867,7 @@ mod call_access_tests {
         });
         assert!(matches!(
             i.eval_expr(&e),
-            Err(RuntimeError::MethodNotFound { .. })
+            Err(RuntimeError::UndefinedFunction { .. })
         ));
     }
 

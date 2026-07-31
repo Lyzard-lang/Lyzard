@@ -1,5 +1,3 @@
-use crate::lexer::Span;
-
 use super::error::RuntimeError;
 use super::value::Value;
 
@@ -123,9 +121,9 @@ fn builtin_range(args: Vec<Value>) -> Result<Value, RuntimeError> {
 fn builtin_assert(args: Vec<Value>) -> Result<Value, RuntimeError> {
     match args.first() {
         Some(Value::Bool(true)) => Ok(Value::Void),
-        Some(Value::Bool(false)) => Err(RuntimeError::InvalidOperation {
-            message: "assertion failed".to_string(),
-            span: Span::dummy(),
+        Some(Value::Bool(false)) => Err(RuntimeError::AssertionFailed {
+            message: None,
+            span: None,
         }),
         Some(other) => Err(RuntimeError::TypeError {
             expected: "bool".to_string(),
@@ -140,9 +138,9 @@ fn builtin_panic(args: Vec<Value>) -> Result<Value, RuntimeError> {
         .first()
         .map(|v| v.to_display_string())
         .unwrap_or_else(|| "panic".to_string());
-    Err(RuntimeError::InvalidOperation {
+    Err(RuntimeError::Panic {
         message,
-        span: Span::dummy(),
+        span: None,
     })
 }
 
@@ -405,7 +403,7 @@ mod builtin_tests {
     #[test]
     fn test_panic_error() {
         match call("panic", vec![Value::Str("boom".to_string())]) {
-            Err(RuntimeError::InvalidOperation { message, .. }) => assert_eq!(message, "boom"),
+            Err(RuntimeError::Panic { message, .. }) => assert_eq!(message, "boom"),
             _ => panic!("expected panic"),
         }
     }
