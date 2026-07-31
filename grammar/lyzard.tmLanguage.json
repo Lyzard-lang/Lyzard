@@ -2,8 +2,8 @@
   "name": "LYZARD",
   "scopeName": "source.lyz",
   "fileTypes": ["lyz"],
-  "foldingStartMarkers": ["\\{\\s*$", "/\\*"],
-  "foldingStopMarkers": ["^\\s*\\}", "\\*/"],
+  "foldingStartMarkers": ["\\{\\s*$", "/-"],
+  "foldingStopMarkers": ["^\\s*\\}", "-/"],
   "patterns": [
     { "include": "#comments" },
     { "include": "#strings" },

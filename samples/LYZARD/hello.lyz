@@ -1,42 +1,86 @@
--- LYZARD Sample: Hello World and basic programs
+-- LYZARD Sample: String and collection utilities
 
-fn greet(name: str) -> str {
-    return "Hello, " + name + "!"
-}
-
-fn add(a: int, b: int) -> int {
-    return a + b
-}
-
-fn factorial(n: int) -> int {
-    if n <= 1 {
-        return 1
+fn split(s: str, delimiter: str) -> [str] {
+    let result = []
+    let current = ""
+    for ch in s {
+        if ch == delimiter {
+            result.push(current)
+            current = ""
+        } else {
+            current = current + ch
+        }
     }
-    return n * factorial(n - 1)
+    if current != "" {
+        result.push(current)
+    }
+    return result
+}
+
+fn join(items: [str], separator: str) -> str {
+    let result = ""
+    let first = true
+    for item in items {
+        if first {
+            result = item
+            first = false
+        } else {
+            result = result + separator + item
+        }
+    }
+    return result
+}
+
+fn trim(s: str) -> str {
+    let start = 0
+    let end = len(s) - 1
+    while start <= end && s[start] == ' ' {
+        start = start + 1
+    }
+    while end >= start && s[end] == ' ' {
+        end = end - 1
+    }
+    if start > end {
+        return ""
+    }
+    return s[start..end + 1]
+}
+
+fn contains(haystack: [int], needle: int) -> bool {
+    for item in haystack {
+        if item == needle {
+            return true
+        }
+    }
+    return false
+}
+
+fn filter_even(items: [int]) -> [int] {
+    let result = []
+    for item in items {
+        if item % 2 == 0 {
+            result.push(item)
+        }
+    }
+    return result
 }
 
 fn main() {
-    let message = greet("LYZARD")
-    print(message)
+    let csv = "apple,banana,cherry,date"
+    let parts = split(csv, ",")
+    print("Split: " + join(parts, " | "))
 
-    let sum = add(10, 20)
-    print("10 + 20 = " + str(sum))
+    let messy = "  hello world  "
+    let clean = trim(messy)
+    print("Trimmed: '" + clean + "'")
 
-    let fact = factorial(5)
-    print("5! = " + str(fact))
-
-    let x: int = 42
-    let pi: float = 3.14159
-    let flag: bool = true
-    let initial: char = 'L'
-
-    if x > 0 && flag {
-        print("x is positive")
+    let numbers = [-3, -1, 0, 2, 4, 7, 9]
+    let evens = filter_even(numbers)
+    for n in evens {
+        print("Even: " + str(n))
     }
 
-    let i = 0
-    while i < 10 {
-        print(i)
-        i = i + 1
+    if contains(numbers, 7) {
+        print("Found 7 in list")
     }
 }
