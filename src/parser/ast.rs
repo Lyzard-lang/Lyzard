@@ -426,7 +426,7 @@ pub struct BinaryExpr {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinaryOp {
     Add,
     Sub,
@@ -470,10 +470,19 @@ pub struct UnaryExpr {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
     Neg,
     Not,
+}
+
+impl UnaryOp {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Neg => "-",
+            Self::Not => "!",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
