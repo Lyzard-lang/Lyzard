@@ -478,6 +478,115 @@ impl Lexer {
         Ok(self.make_token(kind, span))
     }
 
+    // ════════════════════════════════════════
+    //   OPERATOR AND PUNCTUATION LEXING
+    // ════════════════════════════════════════
+
+    fn lex_operator(&mut self) -> Result<Token, LexError> {
+        let start = self.current_pos();
+        let start_line = self.line;
+        let start_col = self.col;
+
+        let ch = self.advance();
+
+        let kind = match ch {
+            '(' => TokenKind::LeftParen,
+            ')' => TokenKind::RightParen,
+            '{' => TokenKind::LeftBrace,
+            '}' => TokenKind::RightBrace,
+            '[' => TokenKind::LeftBracket,
+            ']' => TokenKind::RightBracket,
+            ',' => TokenKind::Comma,
+            ';' => TokenKind::Semicolon,
+            '%' => TokenKind::Percent,
+            '#' => TokenKind::Hash,
+            '*' => TokenKind::Star,
+            ':' => TokenKind::Colon,
+            '+' => TokenKind::Plus,
+
+            '-' => {
+                if self.advance_if('>') { TokenKind::Arrow }
+                else { TokenKind::Minus }
+            }
+
+            '/' => TokenKind::Slash,
+
+            '=' => {
+                if self.advance_if('=') { TokenKind::EqualsEquals }
+                else if self.advance_if('>') { TokenKind::FatArrow }
+                else { TokenKind::Equals }
+            }
+
+            '!' => {
+                if self.advance_if('=') { TokenKind::BangEquals }
+                else { TokenKind::Bang }
+            }
+
+            '<' => {
+                if self.advance_if('=') { TokenKind::LessEquals }
+                else { TokenKind::Less }
+            }
+
+            '>' => {
+                if self.advance_if('=') { TokenKind::GreaterEquals }
+                else { TokenKind::Greater }
+            }
+
+            '&' => {
+                if self.advance_if('&') { TokenKind::And }
+                else {
+                    return Err(LexError::UnexpectedChar {
+                        ch: '&',
+                        span: Span::new(start, self.byte_pos, start_line, start_col),
+                        file: self.file.clone(),
+                    })
+                }
+            }
+
+            '|' => {
+                if self.advance_if('|') { TokenKind::Or }
+                else {
+                    return Err(LexError::UnexpectedChar {
+                        ch: '|',
+                        span: Span::new(start, self.byte_pos, start_line, start_col),
+                        file: self.file.clone(),
+                    })
+                }
+            }
+
+            '.' => {
+                if self.advance_if('.') {
+                    if self.advance_if('=') { TokenKind::DotDotEquals }
+                    else { TokenKind::DotDot }
+                } else {
+                    TokenKind::Dot
+                }
+            }
+
+            '?' => {
+                if self.advance_if('?') { TokenKind::QuestionQuestion }
+                else { TokenKind::Question }
+            }
+
+            '\n' => {
+                self.line += 1;
+                self.col = 1;
+                TokenKind::Newline
+            }
+
+            other => {
+                return Err(LexError::UnexpectedChar {
+                    ch: other,
+                    span: Span::new(start, self.byte_pos, start_line, start_col),
+                    file: self.file.clone(),
+                })
+            }
+        };
+
+        let span = Span::new(start, self.byte_pos, start_line, start_col);
+        Ok(self.make_token(kind, span))
+    }
+
     /// Check if a name is a keyword. If so, return the keyword token.
     /// Otherwise, return an Identifier token.
     fn keyword_or_identifier(name: String) -> TokenKind {
@@ -930,5 +1039,60 @@ mod char_ident_tests {
             let mut l = Lexer::new(kw, "test.lyz");
             assert_eq!(l.lex_identifier().unwrap().kind, expected, "keyword: {}", kw);
         }
+    }
+}
+
+#[cfg(test)]
+mod operator_tests {
+    use super::*;
+
+    fn lex_op(src: &str) -> TokenKind {
+        let mut l = Lexer::new(src, "test.lyz");
+        l.lex_operator().unwrap().kind
+    }
+
+    #[test]
+    fn test_arrow()         { assert_eq!(lex_op("->"), TokenKind::Arrow); }
+    #[test]
+    fn test_fat_arrow()     { assert_eq!(lex_op("=>"), TokenKind::FatArrow); }
+    #[test]
+    fn test_equals_equals() { assert_eq!(lex_op("=="), TokenKind::EqualsEquals); }
+    #[test]
+    fn test_bang_equals()   { assert_eq!(lex_op("!="), TokenKind::BangEquals); }
+    #[test]
+    fn test_less_equals()   { assert_eq!(lex_op("<="), TokenKind::LessEquals); }
+    #[test]
+    fn test_greater_equals(){ assert_eq!(lex_op(">="), TokenKind::GreaterEquals); }
+    #[test]
+    fn test_and()           { assert_eq!(lex_op("&&"), TokenKind::And); }
+    #[test]
+    fn test_or()            { assert_eq!(lex_op("||"), TokenKind::Or); }
+    #[test]
+    fn test_dot_dot()       { assert_eq!(lex_op(".."), TokenKind::DotDot); }
+    #[test]
+    fn test_dot_dot_equals(){ assert_eq!(lex_op("..="), TokenKind::DotDotEquals); }
+    #[test]
+    fn test_question_question() { assert_eq!(lex_op("??"), TokenKind::QuestionQuestion); }
+    #[test]
+    fn test_single_equals() { assert_eq!(lex_op("="), TokenKind::Equals); }
+    #[test]
+    fn test_less()          { assert_eq!(lex_op("<"), TokenKind::Less); }
+    #[test]
+    fn test_single_dot()    { assert_eq!(lex_op("."), TokenKind::Dot); }
+    #[test]
+    fn test_bang()          { assert_eq!(lex_op("!"), TokenKind::Bang); }
+
+    #[test]
+    fn test_unknown_char_error() {
+        let mut l = Lexer::new("@", "test.lyz");
+        assert!(l.lex_operator().is_err());
+    }
+
+    #[test]
+    fn test_ambiguous_minus_not_arrow() {
+        let mut l = Lexer::new("- 5", "test.lyz");
+        let tok = l.lex_operator().unwrap();
+        assert_eq!(tok.kind, TokenKind::Minus);
+        assert_eq!(l.current(), ' ');
     }
 }
