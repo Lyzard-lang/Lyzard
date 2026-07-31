@@ -36,7 +36,7 @@ pub fn postfix_bp(kind: &TokenKind) -> Option<u8> {
     }
 }
 
-#[allow(clippy::result_large_err, dead_code)]
+#[allow(clippy::result_large_err)]
 impl Parser {
     pub(super) fn parse_expr(&mut self) -> Result<Expr, ParseError> {
         self.parse_expr_bp(0)
@@ -348,7 +348,6 @@ impl Parser {
     }
 }
 
-#[allow(dead_code)]
 fn is_assign_target(e: &Expr) -> bool {
     matches!(e, Expr::Identifier(_) | Expr::Field(_) | Expr::Index(_))
 }

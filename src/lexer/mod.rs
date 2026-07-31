@@ -802,6 +802,7 @@ impl Lexer {
             "pub" => TokenKind::Pub,
             "import" => TokenKind::Import,
             "module" => TokenKind::Module,
+            "interface" => TokenKind::Interface,
             "spawn" => TokenKind::Spawn,
             "select" => TokenKind::Select,
             "null" => TokenKind::Null,

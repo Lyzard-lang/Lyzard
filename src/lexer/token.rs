@@ -13,29 +13,30 @@ pub enum TokenKind {
     Identifier(std::rc::Rc<str>), // myVar, user, _private (interned)
 
     // ── KEYWORDS ─────────────────────────────────────────────
-    Let,      // let
-    Mut,      // mut
-    Const,    // const
-    Fn,       // fn
-    Return,   // return
-    If,       // if
-    Else,     // else
-    While,    // while
-    For,      // for
-    In,       // in
-    Break,    // break
-    Continue, // continue
-    Loop,     // loop
-    Struct,   // struct
-    Impl,     // impl
-    Enum,     // enum
-    Match,    // match
-    Pub,      // pub
-    Import,   // import
-    Module,   // module
-    Spawn,    // spawn
-    Select,   // select
-    Null,     // null
+    Let,       // let
+    Mut,       // mut
+    Const,     // const
+    Fn,        // fn
+    Return,    // return
+    If,        // if
+    Else,      // else
+    While,     // while
+    For,       // for
+    In,        // in
+    Break,     // break
+    Continue,  // continue
+    Loop,      // loop
+    Struct,    // struct
+    Impl,      // impl
+    Enum,      // enum
+    Match,     // match
+    Pub,       // pub
+    Import,    // import
+    Module,    // module
+    Interface, // interface
+    Spawn,     // spawn
+    Select,    // select
+    Null,      // null
 
     // ── BUILT-IN TYPES ───────────────────────────────────────
     IntType,   // int
@@ -128,6 +129,7 @@ impl TokenKind {
             Self::Pub => "'pub'",
             Self::Import => "'import'",
             Self::Module => "'module'",
+            Self::Interface => "'interface'",
             Self::Spawn => "'spawn'",
             Self::Select => "'select'",
             Self::Null => "'null'",
@@ -198,6 +200,7 @@ impl TokenKind {
                 | Self::Pub
                 | Self::Import
                 | Self::Module
+                | Self::Interface
                 | Self::Spawn
                 | Self::Select
                 | Self::Null
