@@ -1,7 +1,10 @@
 use std::env;
 use std::process;
 
+use lyzard::analyzer::Analyzer;
+use lyzard::interpreter::Interpreter;
 use lyzard::lexer::Lexer;
+use lyzard::parser::Parser;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -20,19 +23,34 @@ fn main() {
         }
     };
 
-    match Lexer::tokenize(&source, path) {
-        Ok(tokens) => {
-            for token in &tokens {
-                println!(
-                    "{:>4}:{:<3} {:>3} bytes  {:?}",
-                    token.span.line,
-                    token.span.col,
-                    token.span.len(),
-                    token.kind
-                );
-            }
-            println!("{} tokens", tokens.len());
+    let tokens = match Lexer::tokenize(&source, path) {
+        Ok(tokens) => tokens,
+        Err(err) => {
+            eprint!("{}", err.format(&source));
+            process::exit(1);
         }
+    };
+
+    let (program, parse_errs) = match Parser::new(tokens, path, &source).parse() {
+        Ok(result) => result,
+        Err(err) => {
+            eprint!("{}", err.format(&source));
+            process::exit(1);
+        }
+    };
+    if !parse_errs.is_empty() {
+        eprint!("{}", parse_errs.format_all(&source));
+        process::exit(1);
+    }
+
+    let (semantic_errs, _) = Analyzer::new(&source, path).analyze(&program);
+    if !semantic_errs.is_empty() {
+        eprint!("{}", semantic_errs.format_all(&source));
+        process::exit(1);
+    }
+
+    match Interpreter::new().run(&program) {
+        Ok(()) => {}
         Err(err) => {
             eprint!("{}", err.format(&source));
             process::exit(1);
