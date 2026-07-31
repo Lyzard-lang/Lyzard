@@ -624,6 +624,78 @@ impl Lexer {
             _          => TokenKind::Identifier(name),
         }
     }
+
+    // ════════════════════════════════════════
+    //   THE MAIN TOKENIZE LOOP
+    // ════════════════════════════════════════
+
+    /// Public API: tokenize a full source file
+    pub fn tokenize(source: &str, file: &str) -> Result<Vec<Token>, LexError> {
+        let mut lexer = Lexer::new(source, file);
+        lexer.run()
+    }
+
+    /// Internal tokenize loop
+    fn run(&mut self) -> Result<Vec<Token>, LexError> {
+        let mut tokens: Vec<Token> = Vec::with_capacity(256);
+        let mut last_kind: Option<TokenKind> = None;
+
+        loop {
+            // Step 1: Skip spaces/tabs
+            self.skip_whitespace();
+
+            // Step 2: Skip comments (may loop multiple times for back-to-back comments)
+            self.skip_comments()?;
+
+            // Step 3: Skip whitespace again after comments
+            self.skip_whitespace();
+
+            // Step 4: End of file
+            if self.is_at_end() {
+                let span = Span::new(self.byte_pos, self.byte_pos, self.line, self.col);
+                tokens.push(self.make_token(TokenKind::EOF, span));
+                break;
+            }
+
+            let ch = self.current();
+
+            // Step 5: Handle newlines (significant or skip)
+            if ch == '\n' {
+                if self.newline_is_significant(last_kind.as_ref()) {
+                    let start = self.current_pos();
+                    self.advance();
+                    self.line += 1;
+                    self.col = 1;
+                    let span = Span::new(start, self.byte_pos, self.line - 1, self.col);
+                    tokens.push(self.make_token(TokenKind::Newline, span));
+                    last_kind = Some(TokenKind::Newline);
+                } else {
+                    self.advance();
+                    self.line += 1;
+                    self.col = 1;
+                }
+                continue;
+            }
+
+            // Step 6: Lex the next token
+            let token = if Self::is_digit(ch) {
+                self.lex_number()?
+            } else if ch == '"' {
+                self.lex_string()?
+            } else if ch == '\'' {
+                self.lex_char()?
+            } else if Self::is_alpha(ch) {
+                self.lex_identifier()?
+            } else {
+                self.lex_operator()?
+            };
+
+            last_kind = Some(token.kind.clone());
+            tokens.push(token);
+        }
+
+        Ok(tokens)
+    }
 }
 
 #[cfg(test)]
@@ -1094,5 +1166,116 @@ mod operator_tests {
         let tok = l.lex_operator().unwrap();
         assert_eq!(tok.kind, TokenKind::Minus);
         assert_eq!(l.current(), ' ');
+    }
+}
+
+#[cfg(test)]
+mod tokenize_tests {
+    use super::*;
+
+    fn kinds(src: &str) -> Vec<TokenKind> {
+        Lexer::tokenize(src, "test.lyz")
+            .unwrap()
+            .into_iter()
+            .map(|t| t.kind)
+            .collect()
+    }
+
+    #[test]
+    fn test_empty_source() {
+        let toks = kinds("");
+        assert_eq!(toks, vec![TokenKind::EOF]);
+    }
+
+    #[test]
+    fn test_simple_let() {
+        let toks = kinds("let x = 5");
+        assert_eq!(toks, vec![
+            TokenKind::Let,
+            TokenKind::Identifier("x".to_string()),
+            TokenKind::Equals,
+            TokenKind::IntLiteral(5),
+            TokenKind::EOF,
+        ]);
+    }
+
+    #[test]
+    fn test_function_declaration() {
+        let src = "fn add(a: int, b: int) -> int";
+        let toks = kinds(src);
+        assert_eq!(toks[0], TokenKind::Fn);
+        assert_eq!(toks[1], TokenKind::Identifier("add".to_string()));
+        assert_eq!(toks[2], TokenKind::LeftParen);
+        assert_eq!(toks[10], TokenKind::RightParen);
+        assert_eq!(toks[11], TokenKind::Arrow);
+        assert_eq!(toks[12], TokenKind::IntType);
+    }
+
+    #[test]
+    fn test_newline_significant_after_rparen() {
+        let toks = kinds("foo()\nbar()");
+        assert!(toks.contains(&TokenKind::Newline));
+    }
+
+    #[test]
+    fn test_newline_not_significant_after_plus() {
+        let toks = kinds("1 +\n2");
+        assert!(!toks.contains(&TokenKind::Newline));
+    }
+
+    #[test]
+    fn test_comment_skipped() {
+        let toks = kinds("let x = 5 -- this is a comment\nlet y = 6");
+        assert!(!toks.iter().any(|t| matches!(t, TokenKind::Identifier(s) if s == "this")));
+        assert!(toks.contains(&TokenKind::Let));
+    }
+
+    #[test]
+    fn test_multi_line_program() {
+        let src = r#"
+fn greet(name: str) -> str {
+    return "Hello, " + name
+}
+"#;
+        let result = Lexer::tokenize(src, "test.lyz");
+        assert!(result.is_ok());
+        let toks = result.unwrap();
+        assert!(toks.iter().any(|t| t.kind == TokenKind::Fn));
+        assert!(toks.iter().any(|t| t.kind == TokenKind::Return));
+        assert!(toks.last().unwrap().kind == TokenKind::EOF);
+    }
+
+    #[test]
+    fn test_all_token_kinds_produced() {
+        let src = r#"
+let mut x: int = 42
+let f: float = 3.14
+let s: str = "hello"
+let b: bool = true
+let c: char = 'A'
+fn add(a: int, b: int) -> int => a + b
+if x > 0 { return x } else { return 0 }
+for i in 0..10 { print(i) }
+while x != 0 { x = x - 1 }
+match x { 0 -> "zero" _ -> "other" }
+spawn { doWork() }
+"#;
+        let result = Lexer::tokenize(src, "test.lyz");
+        assert!(result.is_ok(), "Lex error: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_error_propagated() {
+        let result = Lexer::tokenize("let x = @bad", "test.lyz");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_always_ends_with_eof() {
+        let toks = kinds("let x = 5");
+        assert_eq!(toks.last().unwrap(), &TokenKind::EOF);
+
+        let toks = kinds("");
+        assert_eq!(toks.last().unwrap(), &TokenKind::EOF);
     }
 }
