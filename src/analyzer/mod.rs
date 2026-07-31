@@ -290,12 +290,15 @@ impl Analyzer {
     }
 
     // ══════════════════════════════════════════════
-    //   STATEMENTS + EXPRESSIONS (expanded in later steps)
+    //   STATEMENT ANALYSIS
     // ══════════════════════════════════════════════
 
     fn analyze_block(&mut self, block: &Block) {
         self.symbols.push(ScopeKind::Block);
         for stmt in &block.statements {
+            if self.errors.len() >= MAX_ERRORS {
+                break;
+            }
             self.analyze_statement(stmt);
         }
         self.symbols.pop();
@@ -305,13 +308,296 @@ impl Analyzer {
         match stmt {
             Statement::Let(l) => self.analyze_let(l),
             Statement::Const(c) => self.analyze_const(c),
+            Statement::Return(r) => self.analyze_return(r),
+            Statement::If(i) => self.analyze_if(i),
+            Statement::While(w) => self.analyze_while(w),
+            Statement::For(f) => self.analyze_for(f),
+            Statement::Loop(l) => self.analyze_loop(l),
+            Statement::Match(m) => self.analyze_match_stmt(m),
+            Statement::Spawn(s) => self.analyze_spawn(s),
+            Statement::Break(b) => self.analyze_break(b),
+            Statement::Continue(c) => self.analyze_continue(c),
+            Statement::Block(b) => self.analyze_block(b),
             Statement::Expression(e) => self.analyze_expr(&e.expr),
+        }
+    }
+
+    fn analyze_return(&mut self, stmt: &ReturnStmt) {
+        if !self.symbols.inside_function() {
+            self.push_error(SemanticError::InvalidContext {
+                what: "return",
+                required: "inside a function",
+                span: stmt.span,
+                file: self.file.clone(),
+            });
+        }
+        if let Some(value) = &stmt.value {
+            self.analyze_expr(value);
+        }
+    }
+
+    fn analyze_if(&mut self, stmt: &IfStmt) {
+        self.analyze_expr(&stmt.condition);
+        self.analyze_block(&stmt.then_branch);
+        for branch in &stmt.else_if_branches {
+            self.analyze_expr(&branch.condition);
+            self.analyze_block(&branch.body);
+        }
+        if let Some(else_block) = &stmt.else_branch {
+            self.analyze_block(else_block);
+        }
+    }
+
+    fn analyze_while(&mut self, stmt: &WhileStmt) {
+        self.analyze_expr(&stmt.condition);
+        self.symbols.push(ScopeKind::Loop);
+        for s in &stmt.body.statements {
+            self.analyze_statement(s);
+        }
+        self.symbols.pop();
+    }
+
+    fn analyze_for(&mut self, stmt: &ForStmt) {
+        self.analyze_expr(&stmt.iterable);
+        self.symbols.push(ScopeKind::Loop);
+
+        // The loop variable is defined inside the loop scope
+        let sym = Symbol::Variable(VariableSymbol {
+            name: stmt.variable.clone(),
+            mutable: false,
+            type_annotation: None,
+            defined_at: stmt.span,
+            is_param: false,
+        });
+        self.symbols.define(stmt.variable.clone(), sym);
+
+        for s in &stmt.body.statements {
+            self.analyze_statement(s);
+        }
+        self.symbols.pop();
+    }
+
+    fn analyze_loop(&mut self, stmt: &LoopStmt) {
+        self.symbols.push(ScopeKind::Loop);
+        for s in &stmt.body.statements {
+            self.analyze_statement(s);
+        }
+        self.symbols.pop();
+    }
+
+    fn analyze_match_stmt(&mut self, stmt: &MatchStmt) {
+        self.analyze_expr(&stmt.subject);
+        for arm in &stmt.arms {
+            self.analyze_match_arm(arm);
+        }
+    }
+
+    fn analyze_match_arm(&mut self, arm: &MatchArm) {
+        self.symbols.push(ScopeKind::Match);
+
+        // Bindings in patterns become variables in the arm scope
+        self.register_pattern_bindings(&arm.pattern);
+
+        if let Some(guard) = &arm.guard {
+            self.analyze_expr(guard);
+        }
+
+        match &arm.body {
+            MatchBody::Expr(e) => self.analyze_expr(e),
+            MatchBody::Block(b) => self.analyze_block(b),
+        }
+
+        self.symbols.pop();
+    }
+
+    /// Register pattern bindings as variables in current scope
+    fn register_pattern_bindings(&mut self, pattern: &Pattern) {
+        match pattern {
+            Pattern::Binding(b) => {
+                let sym = Symbol::Variable(VariableSymbol {
+                    name: b.name.clone(),
+                    mutable: b.mutable,
+                    type_annotation: None,
+                    defined_at: b.span,
+                    is_param: false,
+                });
+                self.symbols.define(b.name.clone(), sym);
+            }
+            Pattern::EnumVariant(v) => {
+                for binding in &v.bindings {
+                    self.register_pattern_bindings(binding);
+                }
+            }
+            Pattern::Or(o) => {
+                // Only register bindings from the first alternative
+                // (all alternatives must have same bindings — checked in type phase)
+                if let Some(first) = o.alternatives.first() {
+                    self.register_pattern_bindings(first);
+                }
+            }
             _ => {}
         }
     }
 
-    fn analyze_expr(&mut self, _expr: &Expr) {
-        // Expression analysis is implemented in a later step.
+    fn analyze_spawn(&mut self, stmt: &SpawnStmt) {
+        // Spawn opens a new scope (conceptually a new "thread")
+        self.symbols.push(ScopeKind::Block);
+        for s in &stmt.body.statements {
+            self.analyze_statement(s);
+        }
+        self.symbols.pop();
+    }
+
+    fn analyze_break(&mut self, stmt: &BreakStmt) {
+        if !self.symbols.inside_loop() {
+            self.push_error(SemanticError::InvalidContext {
+                what: "break",
+                required: "inside a loop",
+                span: stmt.span,
+                file: self.file.clone(),
+            });
+        }
+    }
+
+    fn analyze_continue(&mut self, stmt: &ContinueStmt) {
+        if !self.symbols.inside_loop() {
+            self.push_error(SemanticError::InvalidContext {
+                what: "continue",
+                required: "inside a loop",
+                span: stmt.span,
+                file: self.file.clone(),
+            });
+        }
+    }
+
+    // ══════════════════════════════════════════════
+    //   EXPRESSION ANALYSIS (expanded in a later step)
+    // ══════════════════════════════════════════════
+
+    fn analyze_expr(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Str(_)
+            | Expr::Bool(_)
+            | Expr::Char(_)
+            | Expr::Null(_) => {}
+            Expr::Identifier(id) => {
+                if id.name == "self" {
+                    if !self.ctx.in_impl {
+                        self.push_error(SemanticError::SelfOutsideImpl {
+                            span: id.span,
+                            file: self.file.clone(),
+                        });
+                    }
+                } else if !self.symbols.is_defined(&id.name) {
+                    self.push_error(SemanticError::UndefinedName {
+                        name: id.name.clone(),
+                        span: id.span,
+                        file: self.file.clone(),
+                        suggestion: None,
+                    });
+                }
+            }
+            Expr::Array(a) => {
+                for el in &a.elements {
+                    self.analyze_expr(el);
+                }
+            }
+            Expr::StructInit(si) => {
+                for (_, val) in &si.fields {
+                    self.analyze_expr(val);
+                }
+            }
+            Expr::Binary(b) => {
+                self.analyze_expr(&b.left);
+                self.analyze_expr(&b.right);
+            }
+            Expr::Unary(u) => self.analyze_expr(&u.operand),
+            Expr::Assign(a) => {
+                self.analyze_expr(&a.target);
+                self.analyze_expr(&a.value);
+            }
+            Expr::Call(c) => {
+                if let Expr::Identifier(id) = &*c.callee {
+                    if !self.symbols.is_defined(&id.name) {
+                        self.push_error(SemanticError::UndefinedName {
+                            name: id.name.clone(),
+                            span: id.span,
+                            file: self.file.clone(),
+                            suggestion: None,
+                        });
+                    }
+                }
+                for arg in &c.args {
+                    self.analyze_expr(&arg.value);
+                }
+            }
+            Expr::MethodCall(m) => {
+                self.analyze_expr(&m.object);
+                for arg in &m.args {
+                    self.analyze_expr(&arg.value);
+                }
+            }
+            Expr::Field(f) => self.analyze_expr(&f.object),
+            Expr::Index(ix) => {
+                self.analyze_expr(&ix.object);
+                self.analyze_expr(&ix.index);
+            }
+            Expr::If(i) => {
+                self.analyze_expr(&i.condition);
+                self.analyze_block(&i.then_branch);
+                if let Some(eb) = &i.else_branch {
+                    self.analyze_block(eb);
+                }
+            }
+            Expr::Match(m) => {
+                self.analyze_expr(&m.subject);
+                for arm in &m.arms {
+                    self.analyze_match_arm(arm);
+                }
+            }
+            Expr::Block(b) => self.analyze_block(b),
+            Expr::Propagate(p) => self.analyze_expr(&p.expr),
+            Expr::NullCoalesce(n) => {
+                self.analyze_expr(&n.left);
+                self.analyze_expr(&n.right);
+            }
+            Expr::Cast(ct) => self.analyze_expr(&ct.expr),
+            Expr::Range(r) => {
+                self.analyze_expr(&r.start);
+                self.analyze_expr(&r.end);
+            }
+            Expr::Closure(cl) => {
+                self.symbols.push(ScopeKind::Block);
+                for param in &cl.params {
+                    if param.is_self && !self.ctx.in_impl {
+                        self.push_error(SemanticError::SelfOutsideImpl {
+                            span: param.span,
+                            file: self.file.clone(),
+                        });
+                        continue;
+                    }
+                    if !param.is_self {
+                        self.symbols.define(
+                            param.name.clone(),
+                            Symbol::Variable(VariableSymbol {
+                                name: param.name.clone(),
+                                mutable: false,
+                                type_annotation: param.param_type.clone(),
+                                defined_at: param.span,
+                                is_param: true,
+                            }),
+                        );
+                    }
+                }
+                match &cl.body {
+                    FnBody::Block(b) => self.analyze_block(b),
+                    FnBody::Arrow(e) => self.analyze_expr(e),
+                }
+                self.symbols.pop();
+            }
+        }
     }
 
     // ══════════════════════════════════════════════
@@ -508,5 +794,98 @@ mod fn_analysis_tests {
         // T must be visible inside the function
         let errs = analyze("fn identity<T>(x: T) -> T { return x }");
         assert!(errs.is_empty(), "{:?}", errs.0);
+    }
+}
+
+#[cfg(test)]
+mod statement_analysis_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn analyze(src: &str) -> SemanticErrors {
+        let tokens = Lexer::tokenize(src, "t.lyz").unwrap();
+        let (prog, _) = Parser::new(tokens, "t.lyz", src).parse().unwrap();
+        Analyzer::new(src, "t.lyz").analyze(&prog).0
+    }
+
+    #[test]
+    fn test_return_valid() {
+        assert!(analyze("fn f() { return 1 }").is_empty());
+    }
+
+    #[test]
+    fn test_break_valid() {
+        assert!(analyze("fn f() { while true { break } }").is_empty());
+    }
+
+    #[test]
+    fn test_continue_valid() {
+        assert!(analyze("fn f() { for i in 0..10 { continue } }").is_empty());
+    }
+
+    #[test]
+    fn test_break_outside_loop() {
+        let errs = analyze("fn f() { break }");
+        assert!(!errs.is_empty());
+        assert!(matches!(
+            &errs.0[0],
+            SemanticError::InvalidContext { what: "break", .. }
+        ));
+    }
+
+    #[test]
+    fn test_continue_outside_loop() {
+        let errs = analyze("fn f() { continue }");
+        assert!(!errs.is_empty());
+        assert!(matches!(
+            &errs.0[0],
+            SemanticError::InvalidContext {
+                what: "continue",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_for_loop_variable_in_scope() {
+        assert!(analyze("fn f() { for i in 0..10 { print(i) } }").is_empty());
+    }
+
+    #[test]
+    fn test_for_loop_variable_not_after_loop() {
+        let errs = analyze("fn f() { for i in 0..10 {} print(i) }");
+        assert!(!errs.is_empty());
+        assert!(matches!(&errs.0[0], SemanticError::UndefinedName { name, .. } if name == "i"));
+    }
+
+    #[test]
+    fn test_if_condition_analyzed() {
+        let errs = analyze("fn f() { if undeclared { print(1) } }");
+        assert!(!errs.is_empty());
+        assert!(
+            matches!(&errs.0[0], SemanticError::UndefinedName { name, .. } if name == "undeclared")
+        );
+    }
+
+    #[test]
+    fn test_match_binding_in_arm() {
+        // 'n' is bound in the match arm and should be visible inside it
+        assert!(
+            analyze("fn f() { match x { n -> print(n) } }").is_empty()
+                || analyze("fn f() { let x = 1 match x { n -> print(n) } }").is_empty()
+        );
+    }
+
+    #[test]
+    fn test_nested_loops_break_valid() {
+        assert!(analyze("fn f() { while true { for i in 0..5 { break } } }").is_empty());
+    }
+
+    #[test]
+    fn test_if_else_both_analyzed() {
+        let errs = analyze("fn f() { if true { print(a) } else { print(b) } }");
+        // Both a and b are undefined — should get 2 errors
+        assert!(errs.len() >= 2);
     }
 }
