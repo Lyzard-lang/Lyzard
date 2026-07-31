@@ -501,29 +501,54 @@ impl Parser {
 
     fn parse_type(&mut self) -> Result<TypeExpr, ParseError> {
         let start = self.current_span();
-        let mut ty = match &self.peek().kind.clone() {
-            TokenKind::Identifier(name) => {
-                let name = name.to_string();
-                self.advance();
-                TypeExpr::Named(NamedType { name, span: start })
-            }
-            TokenKind::IntType
-            | TokenKind::FloatType
-            | TokenKind::BoolType
-            | TokenKind::StrType
-            | TokenKind::CharType
-            | TokenKind::VoidType => {
-                let name = self.peek().kind.name().trim_matches('\'').to_string();
-                self.advance();
-                TypeExpr::Named(NamedType { name, span: start })
-            }
-            _ => {
-                return Err(self.error_hint(
+        let mut ty =
+            match &self.peek().kind.clone() {
+                TokenKind::Identifier(name) => {
+                    let name = name.to_string();
+                    let s = self.current_span();
+                    self.advance();
+                    if name == "never" {
+                        TypeExpr::Never(s)
+                    } else if name == "map" && self.check(TokenKind::LeftBracket) {
+                        self.advance();
+                        let key = self.parse_type()?;
+                        self.expect_hint(TokenKind::Comma, "Map type needs 'map[K, V]'")?;
+                        let value = self.parse_type()?;
+                        self.expect_hint(TokenKind::RightBracket, "Close map type with ']'")?;
+                        TypeExpr::Map(Box::new(key), Box::new(value), s.merge(self.prev_span()))
+                    } else {
+                        TypeExpr::Named(NamedType { name, span: s })
+                    }
+                }
+                TokenKind::IntType
+                | TokenKind::FloatType
+                | TokenKind::BoolType
+                | TokenKind::StrType
+                | TokenKind::CharType
+                | TokenKind::VoidType => {
+                    let name = self.peek().kind.name().trim_matches('\'').to_string();
+                    self.advance();
+                    TypeExpr::Named(NamedType { name, span: start })
+                }
+                TokenKind::LeftParen => {
+                    self.advance();
+                    let mut types = Vec::new();
+                    while !self.check(TokenKind::RightParen) && !self.is_at_end() {
+                        self.skip_newlines();
+                        types.push(self.parse_type()?);
+                        self.skip_newlines();
+                        if !self.advance_if(TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect_hint(TokenKind::RightParen, "Close tuple type with ')'")?;
+                    TypeExpr::Tuple(types, start.merge(self.prev_span()))
+                }
+                _ => return Err(self.error_hint(
                     "a type",
-                    "Types: int, float, str, bool, char, void, Point, List<int>, int?",
-                ))
-            }
-        };
+                    "Types: int, float, str, bool, char, void, Point, List<int>, map[K, V], int?",
+                )),
+            };
 
         if matches!(ty, TypeExpr::Named(_)) && self.advance_if(TokenKind::Less) {
             let mut args = Vec::new();
@@ -545,15 +570,17 @@ impl Parser {
             }
         }
 
-        while self.advance_if(TokenKind::LeftBracket) {
-            self.expect_hint(TokenKind::RightBracket, "Close array type with ']'")?;
-            let span = start.merge(self.prev_span());
-            ty = TypeExpr::Array(Box::new(ty), span);
-        }
-
-        if self.advance_if(TokenKind::Question) {
-            let span = start.merge(self.prev_span());
-            ty = TypeExpr::Optional(Box::new(ty), span);
+        while self.check(TokenKind::LeftBracket) || self.check(TokenKind::Question) {
+            if self.advance_if(TokenKind::LeftBracket) {
+                self.expect_hint(TokenKind::RightBracket, "Close array type with ']'")?;
+                let span = start.merge(self.prev_span());
+                ty = TypeExpr::Array(Box::new(ty), span);
+            } else if self.advance_if(TokenKind::Question) {
+                let span = start.merge(self.prev_span());
+                ty = TypeExpr::Optional(Box::new(ty), span);
+            } else {
+                break;
+            }
         }
 
         Ok(ty)
@@ -571,6 +598,8 @@ impl Parser {
                 break;
             }
             statements.push(self.parse_statement()?);
+            self.skip_newlines();
+            self.advance_if(TokenKind::Semicolon);
             self.skip_newlines();
         }
         self.expect_hint(TokenKind::RightBrace, "Close block with '}'")?;
@@ -603,6 +632,113 @@ impl Parser {
                     span,
                 }))
             }
+            TokenKind::Return => {
+                let start = self.current_span();
+                self.advance();
+                let value = if matches!(
+                    self.peek().kind,
+                    TokenKind::Newline
+                        | TokenKind::RightBrace
+                        | TokenKind::EOF
+                        | TokenKind::Semicolon
+                ) {
+                    None
+                } else {
+                    Some(self.parse_expr()?)
+                };
+                self.advance_if(TokenKind::Semicolon);
+                let span = start.merge(self.prev_span());
+                Ok(Statement::Return(ReturnStmt { value, span }))
+            }
+            TokenKind::If => {
+                let s = self.parse_if_statement()?;
+                Ok(Statement::If(s))
+            }
+            TokenKind::While => {
+                let start = self.current_span();
+                self.advance();
+                let condition = self.parse_expr()?;
+                self.skip_newlines();
+                let body = self.parse_block()?;
+                let span = start.merge(self.prev_span());
+                Ok(Statement::While(WhileStmt {
+                    condition,
+                    body,
+                    span,
+                }))
+            }
+            TokenKind::For => {
+                let start = self.current_span();
+                self.advance();
+                let (variable, _) = self.expect_identifier("loop variable")?;
+                self.expect(TokenKind::In)?;
+                let iterable = self.parse_expr()?;
+                self.skip_newlines();
+                let body = self.parse_block()?;
+                let span = start.merge(self.prev_span());
+                Ok(Statement::For(ForStmt {
+                    variable,
+                    iterable,
+                    body,
+                    span,
+                }))
+            }
+            TokenKind::Loop => {
+                let start = self.current_span();
+                self.advance();
+                let label = if matches!(self.peek().kind, TokenKind::Identifier(_)) {
+                    let (l, _) = self.expect_identifier("loop label")?;
+                    Some(l)
+                } else {
+                    None
+                };
+                self.skip_newlines();
+                let body = self.parse_block()?;
+                let span = start.merge(self.prev_span());
+                Ok(Statement::Loop(LoopStmt { body, label, span }))
+            }
+            TokenKind::Match => {
+                let s = self.parse_match_statement()?;
+                Ok(Statement::Match(s))
+            }
+            TokenKind::Spawn => {
+                let start = self.current_span();
+                self.advance();
+                self.skip_newlines();
+                let body = self.parse_block()?;
+                let span = start.merge(self.prev_span());
+                Ok(Statement::Spawn(SpawnStmt { body, span }))
+            }
+            TokenKind::Break => {
+                let start = self.current_span();
+                self.advance();
+                let label = if matches!(self.peek().kind, TokenKind::Identifier(_)) {
+                    let (l, _) = self.expect_identifier("loop label")?;
+                    Some(l)
+                } else {
+                    None
+                };
+                self.advance_if(TokenKind::Semicolon);
+                let span = start.merge(self.prev_span());
+                Ok(Statement::Break(BreakStmt { label, span }))
+            }
+            TokenKind::Continue => {
+                let start = self.current_span();
+                self.advance();
+                let label = if matches!(self.peek().kind, TokenKind::Identifier(_)) {
+                    let (l, _) = self.expect_identifier("loop label")?;
+                    Some(l)
+                } else {
+                    None
+                };
+                self.advance_if(TokenKind::Semicolon);
+                let span = start.merge(self.prev_span());
+                Ok(Statement::Continue(ContinueStmt { label, span }))
+            }
+            TokenKind::LeftBrace => {
+                let b = self.parse_block()?;
+                Ok(Statement::Block(b))
+            }
             _ => {
                 let s = self.current_span();
                 let expr = self.parse_expr()?;
@@ -610,6 +746,228 @@ impl Parser {
                 Ok(Statement::Expression(ExprStmt { expr, span }))
             }
         }
+    }
+
+    fn parse_if_statement(&mut self) -> Result<IfStmt, ParseError> {
+        let start = self.current_span();
+        self.advance(); // 'if'
+        let condition = self.parse_expr()?;
+        self.skip_newlines();
+        let then_branch = self.parse_block()?;
+        let mut else_if_branches = Vec::new();
+        let mut else_branch = None;
+        while self.check(TokenKind::Else) {
+            self.advance();
+            if self.advance_if(TokenKind::If) {
+                let e_start = self.prev_span();
+                let condition = self.parse_expr()?;
+                self.skip_newlines();
+                let body = self.parse_block()?;
+                let span = e_start.merge(self.prev_span());
+                else_if_branches.push(ElseIfBranch {
+                    condition,
+                    body,
+                    span,
+                });
+            } else {
+                self.skip_newlines();
+                else_branch = Some(self.parse_block()?);
+                break;
+            }
+        }
+        let span = start.merge(self.prev_span());
+        Ok(IfStmt {
+            condition,
+            then_branch,
+            else_if_branches,
+            else_branch,
+            span,
+        })
+    }
+
+    fn parse_match_statement(&mut self) -> Result<MatchStmt, ParseError> {
+        let start = self.current_span();
+        self.advance(); // 'match'
+        let subject = self.parse_expr()?;
+        self.skip_newlines();
+        self.expect(TokenKind::LeftBrace)?;
+        let arms = self.parse_match_arms()?;
+        if arms.is_empty() {
+            return Err(ParseError::EmptyMatch {
+                span: start.merge(self.prev_span()),
+                file: self.file.clone(),
+            });
+        }
+        self.expect(TokenKind::RightBrace)?;
+        let span = start.merge(self.prev_span());
+        Ok(MatchStmt {
+            subject,
+            arms,
+            span,
+        })
+    }
+
+    fn parse_match_arms(&mut self) -> Result<Vec<MatchArm>, ParseError> {
+        let mut arms = Vec::new();
+        while !self.check(TokenKind::RightBrace) && !self.is_at_end() {
+            self.skip_newlines();
+            if self.check(TokenKind::RightBrace) {
+                break;
+            }
+            let s = self.current_span();
+            let pattern = self.parse_pattern()?;
+            let guard = if self.advance_if(TokenKind::If) {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            self.expect_hint(TokenKind::Arrow, "Match arm needs '->' before its body")?;
+            self.skip_newlines();
+            let body = if self.check(TokenKind::LeftBrace) {
+                MatchBody::Block(self.parse_block()?)
+            } else {
+                MatchBody::Expr(self.parse_expr()?)
+            };
+            arms.push(MatchArm {
+                pattern,
+                guard,
+                body,
+                span: s.merge(self.prev_span()),
+            });
+        }
+        Ok(arms)
+    }
+
+    // ── PATTERNS ─────────────────────────────────
+
+    fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let start = self.current_span();
+        let first = self.parse_single_pattern()?;
+        if !self.check(TokenKind::Pipe) {
+            return Ok(first);
+        }
+        let mut alternatives = vec![first];
+        while self.advance_if(TokenKind::Pipe) {
+            self.skip_newlines();
+            alternatives.push(self.parse_single_pattern()?);
+        }
+        let span = start.merge(self.prev_span());
+        Ok(Pattern::Or(OrPattern { alternatives, span }))
+    }
+
+    fn parse_single_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let start = self.current_span();
+        match self.peek().kind.clone() {
+            TokenKind::Identifier(name) => {
+                let name = name.to_string();
+                self.advance();
+                if name == "_" {
+                    return Ok(Pattern::Wildcard(start));
+                }
+                if self.check(TokenKind::Dot) {
+                    self.advance();
+                    let (variant_name, _) = self.expect_identifier("variant name")?;
+                    let bindings = if self.check(TokenKind::LeftParen) {
+                        self.parse_pattern_bindings()?
+                    } else {
+                        Vec::new()
+                    };
+                    let span = start.merge(self.prev_span());
+                    return Ok(Pattern::EnumVariant(EnumVariantPattern {
+                        enum_name: Some(name),
+                        variant_name,
+                        bindings,
+                        span,
+                    }));
+                }
+                if self.check(TokenKind::LeftParen) {
+                    let bindings = self.parse_pattern_bindings()?;
+                    let span = start.merge(self.prev_span());
+                    return Ok(Pattern::EnumVariant(EnumVariantPattern {
+                        enum_name: None,
+                        variant_name: name,
+                        bindings,
+                        span,
+                    }));
+                }
+                Ok(Pattern::Binding(BindingPattern {
+                    name,
+                    mutable: false,
+                    span: start,
+                }))
+            }
+            TokenKind::Mut => {
+                self.advance();
+                let (name, _) = self.expect_identifier("binding name")?;
+                let span = start.merge(self.prev_span());
+                Ok(Pattern::Binding(BindingPattern {
+                    name,
+                    mutable: true,
+                    span,
+                }))
+            }
+            TokenKind::IntLiteral(v) => {
+                self.advance();
+                Ok(Pattern::Literal(LiteralPattern {
+                    value: LiteralValue::Int(v),
+                    span: start,
+                }))
+            }
+            TokenKind::FloatLiteral(v) => {
+                self.advance();
+                Ok(Pattern::Literal(LiteralPattern {
+                    value: LiteralValue::Float(v),
+                    span: start,
+                }))
+            }
+            TokenKind::StringLiteral(v) => {
+                self.advance();
+                Ok(Pattern::Literal(LiteralPattern {
+                    value: LiteralValue::Str(v),
+                    span: start,
+                }))
+            }
+            TokenKind::BoolLiteral(v) => {
+                self.advance();
+                Ok(Pattern::Literal(LiteralPattern {
+                    value: LiteralValue::Bool(v),
+                    span: start,
+                }))
+            }
+            TokenKind::CharLiteral(v) => {
+                self.advance();
+                Ok(Pattern::Literal(LiteralPattern {
+                    value: LiteralValue::Char(v),
+                    span: start,
+                }))
+            }
+            TokenKind::Null => {
+                self.advance();
+                Ok(Pattern::Literal(LiteralPattern {
+                    value: LiteralValue::Null,
+                    span: start,
+                }))
+            }
+            _ => Err(self.error_hint(
+                "a pattern",
+                "Patterns: _, x, mut x, 42, \"hi\", Some(x), Color.Red, a | b",
+            )),
+        }
+    }
+
+    fn parse_pattern_bindings(&mut self) -> Result<Vec<Pattern>, ParseError> {
+        self.expect(TokenKind::LeftParen)?;
+        let mut bindings = Vec::new();
+        while !self.check(TokenKind::RightParen) && !self.is_at_end() {
+            self.skip_newlines();
+            bindings.push(self.parse_pattern()?);
+            self.skip_newlines();
+            if !self.advance_if(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect_hint(TokenKind::RightParen, "Close pattern bindings with ')'")?;
+        Ok(bindings)
     }
 
     // ── NAVIGATION ──────────────────────────────
@@ -1158,5 +1516,350 @@ mod decl_tests {
         let (program, errors) = Parser::new(tokens, "t.lyz", src).parse().unwrap();
         assert!(errors.is_empty());
         assert_eq!(program.declarations.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod stmt_type_pat_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+
+    fn parse_ok(src: &str) -> (Program, ParseErrors) {
+        let tokens = Lexer::tokenize(src, "t.lyz").unwrap();
+        let (program, errors) = Parser::new(tokens, "t.lyz", src).parse().unwrap();
+        assert!(errors.is_empty(), "errors: {}", errors.format_all(src));
+        (program, errors)
+    }
+
+    fn first_fn_body(src: &str) -> FnBody {
+        let (program, _) = parse_ok(src);
+        match &program.declarations[0] {
+            Declaration::Function(f) => f.body.clone(),
+            other => panic!("expected Function, got {:?}", other),
+        }
+    }
+
+    fn block_stmts(src: &str) -> Vec<Statement> {
+        match first_fn_body(src) {
+            FnBody::Block(b) => b.statements,
+            other => panic!("expected Block body, got {:?}", other),
+        }
+    }
+
+    // ── STATEMENTS ──────────────────────────────
+
+    #[test]
+    fn test_return_value() {
+        let stmts = block_stmts("fn f() -> int { return 42 }");
+        assert!(matches!(
+            &stmts[0],
+            Statement::Return(r) if matches!(&r.value, Some(Expr::Int(i)) if i.value == 42)
+        ));
+    }
+
+    #[test]
+    fn test_return_bare() {
+        let stmts = block_stmts("fn f() { return\nlet x = 1 }");
+        assert!(matches!(
+            &stmts[0],
+            Statement::Return(r) if r.value.is_none()
+        ));
+    }
+
+    #[test]
+    fn test_if_else() {
+        let stmts = block_stmts("fn f() { if x > 0 { return 1 } else { return 0 } }");
+        if let Statement::If(i) = &stmts[0] {
+            assert!(matches!(i.condition, Expr::Binary(_)));
+            assert!(i.else_if_branches.is_empty());
+            assert!(i.else_branch.is_some());
+        } else {
+            panic!("expected If statement");
+        }
+    }
+
+    #[test]
+    fn test_if_else_if_chain() {
+        let stmts = block_stmts("fn f() { if a { } else if b { } else if c { } else { } }");
+        if let Statement::If(i) = &stmts[0] {
+            assert_eq!(i.else_if_branches.len(), 2);
+            assert!(i.else_branch.is_some());
+        } else {
+            panic!("expected If statement");
+        }
+    }
+
+    #[test]
+    fn test_while_loop() {
+        let stmts = block_stmts("fn f() { while x != 0 { x = x - 1 } }");
+        assert!(matches!(
+            &stmts[0],
+            Statement::While(w) if matches!(w.condition, Expr::Binary(_))
+        ));
+    }
+
+    #[test]
+    fn test_for_loop() {
+        let stmts = block_stmts("fn f() { for i in 0..10 { print(i) } }");
+        if let Statement::For(f) = &stmts[0] {
+            assert_eq!(f.variable, "i");
+            assert!(matches!(f.iterable, Expr::Range(_)));
+        } else {
+            panic!("expected For statement");
+        }
+    }
+
+    #[test]
+    fn test_loop_with_label_and_break() {
+        let stmts = block_stmts("fn f() { loop outer { break outer } }");
+        if let Statement::Loop(l) = &stmts[0] {
+            assert_eq!(l.label.as_deref(), Some("outer"));
+            assert!(matches!(
+                &l.body.statements[0],
+                Statement::Break(b) if b.label.as_deref() == Some("outer")
+            ));
+        } else {
+            panic!("expected Loop statement");
+        }
+    }
+
+    #[test]
+    fn test_continue_stmt() {
+        let stmts = block_stmts("fn f() { while x { continue } }");
+        if let Statement::While(w) = &stmts[0] {
+            assert!(matches!(w.body.statements[0], Statement::Continue(_)));
+        } else {
+            panic!("expected While statement");
+        }
+    }
+
+    #[test]
+    fn test_nested_block() {
+        let stmts = block_stmts("fn f() { { let x = 1 } }");
+        assert!(matches!(stmts[0], Statement::Block(_)));
+    }
+
+    #[test]
+    fn test_spawn_stmt() {
+        let stmts = block_stmts("fn f() { spawn { work() } }");
+        assert!(matches!(stmts[0], Statement::Spawn(_)));
+    }
+
+    #[test]
+    fn test_match_statement_arms() {
+        let stmts = block_stmts("fn f() { match x { 0 -> \"zero\" _ -> \"other\" } }");
+        if let Statement::Match(m) = &stmts[0] {
+            assert!(matches!(m.subject, Expr::Identifier(_)));
+            assert_eq!(m.arms.len(), 2);
+            assert!(matches!(m.arms[0].pattern, Pattern::Literal(_)));
+            assert!(matches!(m.arms[1].pattern, Pattern::Wildcard(_)));
+        } else {
+            panic!("expected Match statement");
+        }
+    }
+
+    #[test]
+    fn test_match_guard() {
+        let stmts = block_stmts("fn f() { match x { y if y > 0 -> y 0 -> 0 } }");
+        if let Statement::Match(m) = &stmts[0] {
+            assert!(m.arms[0].guard.is_some());
+        } else {
+            panic!("expected Match statement");
+        }
+    }
+
+    #[test]
+    fn test_match_block_body() {
+        let stmts = block_stmts("fn f() { match x { 0 -> { let y = 1 } _ -> { } } }");
+        if let Statement::Match(m) = &stmts[0] {
+            assert!(matches!(m.arms[0].body, MatchBody::Block(_)));
+            assert!(matches!(m.arms[1].body, MatchBody::Block(_)));
+        } else {
+            panic!("expected Match statement");
+        }
+    }
+
+    #[test]
+    fn test_match_expression() {
+        let stmts = block_stmts("fn f() { let v = match x { 1 -> \"one\" _ -> \"other\" } }");
+        if let Statement::Let(l) = &stmts[0] {
+            assert!(matches!(l.value, Expr::Match(_)));
+        } else {
+            panic!("expected Let statement");
+        }
+    }
+
+    #[test]
+    fn test_if_expression() {
+        let stmts = block_stmts("fn f() { let v = if ok { 1 } else { 2 } }");
+        if let Statement::Let(l) = &stmts[0] {
+            assert!(matches!(l.value, Expr::If(_)));
+        } else {
+            panic!("expected Let statement");
+        }
+    }
+
+    #[test]
+    fn test_empty_match_is_error() {
+        let src = "fn f() { match x { } }";
+        let tokens = Lexer::tokenize(src, "t.lyz").unwrap();
+        let (_, errors) = Parser::new(tokens, "t.lyz", src).parse().unwrap();
+        assert!(errors
+            .0
+            .iter()
+            .any(|e| matches!(e, ParseError::EmptyMatch { .. })));
+    }
+
+    // ── TYPES ────────────────────────────────────
+
+    #[test]
+    fn test_tuple_type() {
+        let (program, _) = parse_ok("fn pair() -> (int, str) { }");
+        if let Declaration::Function(f) = &program.declarations[0] {
+            assert!(matches!(f.return_type, Some(TypeExpr::Tuple(ref t, _)) if t.len() == 2));
+        } else {
+            panic!("expected Function");
+        }
+    }
+
+    #[test]
+    fn test_map_type() {
+        let (program, _) = parse_ok("fn lookup(table: map[str, int]) { }");
+        if let Declaration::Function(f) = &program.declarations[0] {
+            assert!(matches!(
+                f.params[0].param_type,
+                Some(TypeExpr::Map(ref k, ref v, _))
+                    if matches!(k.as_ref(), TypeExpr::Named(ref n) if n.name == "str")
+                        && matches!(v.as_ref(), TypeExpr::Named(ref n) if n.name == "int")
+            ));
+        } else {
+            panic!("expected Function");
+        }
+    }
+
+    #[test]
+    fn test_never_type() {
+        let (program, _) = parse_ok("fn die() -> never { }");
+        if let Declaration::Function(f) = &program.declarations[0] {
+            assert!(matches!(f.return_type, Some(TypeExpr::Never(_))));
+        } else {
+            panic!("expected Function");
+        }
+    }
+
+    #[test]
+    fn test_array_of_optional() {
+        let (program, _) = parse_ok("fn f(xs: int?[]) { }");
+        if let Declaration::Function(f) = &program.declarations[0] {
+            assert!(matches!(
+                f.params[0].param_type,
+                Some(TypeExpr::Array(ref inner, _))
+                    if matches!(inner.as_ref(), TypeExpr::Optional(_, _))
+            ));
+        } else {
+            panic!("expected Function");
+        }
+    }
+
+    // ── PATTERNS ─────────────────────────────────
+
+    #[test]
+    fn test_pattern_wildcard() {
+        let stmts = block_stmts("fn f() { match x { _ -> 0 } }");
+        if let Statement::Match(m) = &stmts[0] {
+            assert!(matches!(m.arms[0].pattern, Pattern::Wildcard(_)));
+        } else {
+            panic!("expected Match statement");
+        }
+    }
+
+    #[test]
+    fn test_pattern_binding() {
+        let stmts = block_stmts("fn f() { match x { y -> y } }");
+        if let Statement::Match(m) = &stmts[0] {
+            assert!(matches!(
+                &m.arms[0].pattern,
+                Pattern::Binding(b) if b.name == "y" && !b.mutable
+            ));
+        } else {
+            panic!("expected Match statement");
+        }
+    }
+
+    #[test]
+    fn test_pattern_mut_binding() {
+        let stmts = block_stmts("fn f() { match x { mut y -> y } }");
+        if let Statement::Match(m) = &stmts[0] {
+            assert!(matches!(
+                &m.arms[0].pattern,
+                Pattern::Binding(b) if b.name == "y" && b.mutable
+            ));
+        } else {
+            panic!("expected Match statement");
+        }
+    }
+
+    #[test]
+    fn test_pattern_literals() {
+        let stmts = block_stmts(
+            "fn f() { match x { 42 -> 1 3.5 -> 2 \"hi\" -> 3 true -> 4 'a' -> 5 null -> 6 } }",
+        );
+        if let Statement::Match(m) = &stmts[0] {
+            assert_eq!(m.arms.len(), 6);
+            for arm in &m.arms {
+                assert!(matches!(arm.pattern, Pattern::Literal(_)));
+            }
+        } else {
+            panic!("expected Match statement");
+        }
+    }
+
+    #[test]
+    fn test_pattern_enum_variant() {
+        let stmts = block_stmts("fn f() { match x { Color.Red -> 1 } }");
+        if let Statement::Match(m) = &stmts[0] {
+            assert!(matches!(
+                &m.arms[0].pattern,
+                Pattern::EnumVariant(e) if e.enum_name.as_deref() == Some("Color")
+                    && e.variant_name == "Red"
+                    && e.bindings.is_empty()
+            ));
+        } else {
+            panic!("expected Match statement");
+        }
+    }
+
+    #[test]
+    fn test_pattern_variant_with_bindings() {
+        let stmts = block_stmts("fn f() { match x { Some(v) -> v Option.None -> 0 } }");
+        if let Statement::Match(m) = &stmts[0] {
+            assert!(matches!(
+                &m.arms[0].pattern,
+                Pattern::EnumVariant(e) if e.enum_name.is_none()
+                    && e.variant_name == "Some"
+                    && e.bindings.len() == 1
+            ));
+            assert!(matches!(
+                &m.arms[1].pattern,
+                Pattern::EnumVariant(e) if e.enum_name.as_deref() == Some("Option")
+                    && e.variant_name == "None"
+                    && e.bindings.is_empty()
+            ));
+        } else {
+            panic!("expected Match statement");
+        }
+    }
+
+    #[test]
+    fn test_or_pattern() {
+        let stmts = block_stmts("fn f() { match x { 1 | 2 -> \"low\" _ -> \"high\" } }");
+        if let Statement::Match(m) = &stmts[0] {
+            assert!(matches!(
+                &m.arms[0].pattern,
+                Pattern::Or(o) if o.alternatives.len() == 2
+            ));
+        } else {
+            panic!("expected Match statement");
+        }
     }
 }

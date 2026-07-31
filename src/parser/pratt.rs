@@ -110,8 +110,13 @@ impl Parser {
                 let s = self.current_span();
                 self.advance();
                 let name = name.to_string();
-                // Struct literal: Point { x: 1.0, y: 2.0 }
-                if self.check(TokenKind::LeftBrace) {
+                // Struct literal: Point { x: 1.0, y: 2.0 }.
+                // Disambiguate from a block after a bare identifier
+                // (e.g. `while x { ... }`) by requiring `{ ident :`.
+                if self.check(TokenKind::LeftBrace)
+                    && matches!(&self.peek_ahead(1).kind, TokenKind::Identifier(_))
+                    && self.peek_ahead(2).kind == TokenKind::Colon
+                {
                     return self.parse_struct_init(name, s);
                 }
                 Ok(Expr::Identifier(IdentExpr { name, span: s }))
@@ -142,6 +147,51 @@ impl Parser {
 
             TokenKind::LeftBracket => self.parse_array_literal(),
             TokenKind::LeftBrace => Ok(Expr::Block(Box::new(self.parse_block()?))),
+
+            TokenKind::If => {
+                self.advance();
+                let condition = self.parse_expr()?;
+                self.skip_newlines();
+                let then_branch = self.parse_block()?;
+                let else_branch = if self.advance_if(TokenKind::Else) {
+                    self.skip_newlines();
+                    Some(self.parse_block()?)
+                } else {
+                    None
+                };
+                let end = match &else_branch {
+                    Some(b) => b.span,
+                    None => self.prev_span(),
+                };
+                let span = span.merge(end);
+                Ok(Expr::If(Box::new(IfExpr {
+                    condition,
+                    then_branch,
+                    else_branch,
+                    span,
+                })))
+            }
+
+            TokenKind::Match => {
+                self.advance();
+                let subject = Box::new(self.parse_expr()?);
+                self.skip_newlines();
+                self.expect(TokenKind::LeftBrace)?;
+                let arms = self.parse_match_arms()?;
+                if arms.is_empty() {
+                    return Err(ParseError::EmptyMatch {
+                        span: span.merge(self.prev_span()),
+                        file: self.file.clone(),
+                    });
+                }
+                self.expect(TokenKind::RightBrace)?;
+                let span = span.merge(self.prev_span());
+                Ok(Expr::Match(Box::new(MatchExpr {
+                    subject,
+                    arms,
+                    span,
+                })))
+            }
 
             _ => Err(self.error_hint(
                 "an expression",
@@ -453,5 +503,20 @@ mod pratt_tests {
         assert!(
             matches!(&expr("-x * (a + b) > 0 && !flag"), Expr::Binary(b) if b.op == BinaryOp::And)
         );
+    }
+    #[test]
+    fn test_struct_init() {
+        if let Expr::StructInit(s) = expr("Point { x: 1.0, y: 2.0 }") {
+            assert_eq!(s.name, "Point");
+            assert_eq!(s.fields.len(), 2);
+            assert_eq!(s.fields[0].0, "x");
+        } else {
+            panic!("expected StructInit");
+        }
+    }
+    #[test]
+    fn test_identifier_block_not_struct() {
+        // `while x { ... }` — a bare identifier followed by `{` is NOT a struct init
+        assert!(matches!(expr("x"), Expr::Identifier(_)));
     }
 }

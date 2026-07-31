@@ -914,11 +914,7 @@ impl Lexer {
                 if self.advance_if_byte(b'|') {
                     TokenKind::Or
                 } else {
-                    return Err(LexError::UnexpectedChar {
-                        ch: '|',
-                        span: Span::new(start, self.pos, start_line, start_col),
-                        file: std::rc::Rc::clone(&self.file),
-                    });
+                    TokenKind::Pipe
                 }
             }
 

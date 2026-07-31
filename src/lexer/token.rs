@@ -69,6 +69,9 @@ pub enum TokenKind {
     Or,   // ||
     Bang, // !
 
+    // ── PATTERNS ─────────────────────────────────────────────
+    Pipe, // |  (or-pattern separator: `Some(x) | None`)
+
     // ── ARROWS ───────────────────────────────────────────────
     Arrow,    // ->
     FatArrow, // =>
@@ -154,6 +157,7 @@ impl TokenKind {
             Self::And => "'&&'",
             Self::Or => "'||'",
             Self::Bang => "'!'",
+            Self::Pipe => "'|'",
             Self::Arrow => "'->'",
             Self::FatArrow => "'=>'",
             Self::DotDot => "'..'",
@@ -244,6 +248,7 @@ impl TokenKind {
                 | Self::And
                 | Self::Or
                 | Self::Bang
+                | Self::Pipe
         )
     }
 }
