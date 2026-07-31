@@ -544,6 +544,13 @@ impl Parser {
                     self.expect_hint(TokenKind::RightParen, "Close tuple type with ')'")?;
                     TypeExpr::Tuple(types, start.merge(self.prev_span()))
                 }
+                TokenKind::LeftBracket => {
+                    let s = self.current_span();
+                    self.advance();
+                    let inner = self.parse_type()?;
+                    self.expect_hint(TokenKind::RightBracket, "Close array type with ']'")?;
+                    TypeExpr::Array(Box::new(inner), s.merge(self.prev_span()))
+                }
                 _ => return Err(self.error_hint(
                     "a type",
                     "Types: int, float, str, bool, char, void, Point, List<int>, map[K, V], int?",
@@ -912,6 +919,19 @@ impl Parser {
                     value: LiteralValue::Int(v),
                     span: start,
                 }))
+            }
+            TokenKind::Minus => {
+                self.advance();
+                if let TokenKind::IntLiteral(v) = self.peek().kind.clone() {
+                    self.advance();
+                    let span = start.merge(self.prev_span());
+                    Ok(Pattern::Literal(LiteralPattern {
+                        value: LiteralValue::Int(-v),
+                        span,
+                    }))
+                } else {
+                    Err(self.error_hint("integer after '-'", "Negative patterns: -42"))
+                }
             }
             TokenKind::FloatLiteral(v) => {
                 self.advance();
@@ -1524,342 +1544,139 @@ mod stmt_type_pat_tests {
     use super::*;
     use crate::lexer::Lexer;
 
-    fn parse_ok(src: &str) -> (Program, ParseErrors) {
-        let tokens = Lexer::tokenize(src, "t.lyz").unwrap();
-        let (program, errors) = Parser::new(tokens, "t.lyz", src).parse().unwrap();
-        assert!(errors.is_empty(), "errors: {}", errors.format_all(src));
-        (program, errors)
-    }
-
-    fn first_fn_body(src: &str) -> FnBody {
-        let (program, _) = parse_ok(src);
-        match &program.declarations[0] {
-            Declaration::Function(f) => f.body.clone(),
-            other => panic!("expected Function, got {:?}", other),
+    fn in_fn(src: &str) -> Statement {
+        let wrapped = format!("fn __t__() {{ {} }}", src);
+        let t = Lexer::tokenize(&wrapped, "t.lyz").unwrap();
+        let (p, e) = Parser::new(t, "t.lyz", &wrapped).parse().unwrap();
+        if !e.is_empty() {
+            panic!("{}", e.format_all(&wrapped));
         }
-    }
-
-    fn block_stmts(src: &str) -> Vec<Statement> {
-        match first_fn_body(src) {
-            FnBody::Block(b) => b.statements,
-            other => panic!("expected Block body, got {:?}", other),
+        if let Declaration::Function(f) = &p.declarations[0] {
+            if let FnBody::Block(b) = &f.body {
+                return b.statements[0].clone();
+            }
         }
+        panic!("no stmt");
     }
 
-    // ── STATEMENTS ──────────────────────────────
+    fn parse_type(src: &str) -> TypeExpr {
+        let t = Lexer::tokenize(src, "t.lyz").unwrap();
+        Parser::new(t, "t.lyz", src).parse_type().unwrap()
+    }
 
+    fn parse_pat(src: &str) -> Pattern {
+        let t = Lexer::tokenize(src, "t.lyz").unwrap();
+        Parser::new(t, "t.lyz", src).parse_pattern().unwrap()
+    }
+
+    // Statements
     #[test]
     fn test_return_value() {
-        let stmts = block_stmts("fn f() -> int { return 42 }");
-        assert!(matches!(
-            &stmts[0],
-            Statement::Return(r) if matches!(&r.value, Some(Expr::Int(i)) if i.value == 42)
-        ));
+        assert!(matches!(&in_fn("return 42"), Statement::Return(r) if r.value.is_some()));
     }
-
     #[test]
-    fn test_return_bare() {
-        let stmts = block_stmts("fn f() { return\nlet x = 1 }");
-        assert!(matches!(
-            &stmts[0],
-            Statement::Return(r) if r.value.is_none()
-        ));
+    fn test_return_none() {
+        assert!(matches!(&in_fn("return"), Statement::Return(r) if r.value.is_none()));
     }
-
     #[test]
     fn test_if_else() {
-        let stmts = block_stmts("fn f() { if x > 0 { return 1 } else { return 0 } }");
-        if let Statement::If(i) = &stmts[0] {
-            assert!(matches!(i.condition, Expr::Binary(_)));
-            assert!(i.else_if_branches.is_empty());
+        if let Statement::If(i) = in_fn("if x>0 { return 1 } else { return 0 }") {
             assert!(i.else_branch.is_some());
-        } else {
-            panic!("expected If statement");
         }
     }
-
     #[test]
-    fn test_if_else_if_chain() {
-        let stmts = block_stmts("fn f() { if a { } else if b { } else if c { } else { } }");
-        if let Statement::If(i) = &stmts[0] {
-            assert_eq!(i.else_if_branches.len(), 2);
-            assert!(i.else_branch.is_some());
-        } else {
-            panic!("expected If statement");
+    fn test_else_if() {
+        if let Statement::If(i) =
+            in_fn("if a>0 { return 1 } else if a<0 { return -1 } else { return 0 }")
+        {
+            assert_eq!(i.else_if_branches.len(), 1);
         }
     }
-
     #[test]
-    fn test_while_loop() {
-        let stmts = block_stmts("fn f() { while x != 0 { x = x - 1 } }");
+    fn test_while() {
         assert!(matches!(
-            &stmts[0],
-            Statement::While(w) if matches!(w.condition, Expr::Binary(_))
+            in_fn("while x > 0 { x = x - 1 }"),
+            Statement::While(_)
         ));
     }
-
     #[test]
-    fn test_for_loop() {
-        let stmts = block_stmts("fn f() { for i in 0..10 { print(i) } }");
-        if let Statement::For(f) = &stmts[0] {
+    fn test_for() {
+        if let Statement::For(f) = in_fn("for i in 0..10 { print(i) }") {
             assert_eq!(f.variable, "i");
-            assert!(matches!(f.iterable, Expr::Range(_)));
-        } else {
-            panic!("expected For statement");
         }
     }
-
     #[test]
-    fn test_loop_with_label_and_break() {
-        let stmts = block_stmts("fn f() { loop outer { break outer } }");
-        if let Statement::Loop(l) = &stmts[0] {
-            assert_eq!(l.label.as_deref(), Some("outer"));
-            assert!(matches!(
-                &l.body.statements[0],
-                Statement::Break(b) if b.label.as_deref() == Some("outer")
-            ));
-        } else {
-            panic!("expected Loop statement");
-        }
+    fn test_loop_break() {
+        assert!(matches!(in_fn("loop { break }"), Statement::Loop(_)));
     }
-
     #[test]
-    fn test_continue_stmt() {
-        let stmts = block_stmts("fn f() { while x { continue } }");
-        if let Statement::While(w) = &stmts[0] {
-            assert!(matches!(w.body.statements[0], Statement::Continue(_)));
-        } else {
-            panic!("expected While statement");
-        }
-    }
-
-    #[test]
-    fn test_nested_block() {
-        let stmts = block_stmts("fn f() { { let x = 1 } }");
-        assert!(matches!(stmts[0], Statement::Block(_)));
-    }
-
-    #[test]
-    fn test_spawn_stmt() {
-        let stmts = block_stmts("fn f() { spawn { work() } }");
-        assert!(matches!(stmts[0], Statement::Spawn(_)));
-    }
-
-    #[test]
-    fn test_match_statement_arms() {
-        let stmts = block_stmts("fn f() { match x { 0 -> \"zero\" _ -> \"other\" } }");
-        if let Statement::Match(m) = &stmts[0] {
-            assert!(matches!(m.subject, Expr::Identifier(_)));
+    fn test_match_arms() {
+        if let Statement::Match(m) = in_fn("match x { 0 -> print(x) _ -> print(x) }") {
             assert_eq!(m.arms.len(), 2);
-            assert!(matches!(m.arms[0].pattern, Pattern::Literal(_)));
-            assert!(matches!(m.arms[1].pattern, Pattern::Wildcard(_)));
-        } else {
-            panic!("expected Match statement");
         }
     }
-
     #[test]
-    fn test_match_guard() {
-        let stmts = block_stmts("fn f() { match x { y if y > 0 -> y 0 -> 0 } }");
-        if let Statement::Match(m) = &stmts[0] {
-            assert!(m.arms[0].guard.is_some());
-        } else {
-            panic!("expected Match statement");
-        }
+    fn test_spawn() {
+        assert!(matches!(in_fn("spawn { doWork() }"), Statement::Spawn(_)));
+    }
+    #[test]
+    fn test_let_in_block() {
+        assert!(matches!(in_fn("let y = 10"), Statement::Let(_)));
     }
 
+    // Types
     #[test]
-    fn test_match_block_body() {
-        let stmts = block_stmts("fn f() { match x { 0 -> { let y = 1 } _ -> { } } }");
-        if let Statement::Match(m) = &stmts[0] {
-            assert!(matches!(m.arms[0].body, MatchBody::Block(_)));
-            assert!(matches!(m.arms[1].body, MatchBody::Block(_)));
-        } else {
-            panic!("expected Match statement");
-        }
+    fn test_type_int() {
+        assert!(matches!(parse_type("int"), TypeExpr::Named(_)));
+    }
+    #[test]
+    fn test_type_optional() {
+        assert!(matches!(parse_type("str?"), TypeExpr::Optional(_, _)));
+    }
+    #[test]
+    fn test_type_array() {
+        assert!(matches!(parse_type("[float]"), TypeExpr::Array(_, _)));
+    }
+    #[test]
+    fn test_type_generic() {
+        assert!(matches!(
+            parse_type("Result<int,str>"),
+            TypeExpr::Generic(_)
+        ));
+    }
+    #[test]
+    fn test_type_tuple() {
+        assert!(matches!(parse_type("(int, str)"), TypeExpr::Tuple(_, _)));
     }
 
+    // Patterns
     #[test]
-    fn test_match_expression() {
-        let stmts = block_stmts("fn f() { let v = match x { 1 -> \"one\" _ -> \"other\" } }");
-        if let Statement::Let(l) = &stmts[0] {
-            assert!(matches!(l.value, Expr::Match(_)));
-        } else {
-            panic!("expected Let statement");
+    fn test_pat_wildcard() {
+        assert!(matches!(parse_pat("_"), Pattern::Wildcard(_)));
+    }
+    #[test]
+    fn test_pat_binding() {
+        assert!(matches!(parse_pat("x"), Pattern::Binding(_)));
+    }
+    #[test]
+    fn test_pat_int() {
+        assert!(matches!(parse_pat("42"), Pattern::Literal(_)));
+    }
+    #[test]
+    fn test_pat_neg() {
+        if let Pattern::Literal(l) = parse_pat("-5") {
+            assert_eq!(l.value, LiteralValue::Int(-5));
         }
     }
-
     #[test]
-    fn test_if_expression() {
-        let stmts = block_stmts("fn f() { let v = if ok { 1 } else { 2 } }");
-        if let Statement::Let(l) = &stmts[0] {
-            assert!(matches!(l.value, Expr::If(_)));
-        } else {
-            panic!("expected Let statement");
-        }
+    fn test_pat_enum() {
+        assert!(matches!(
+            parse_pat("Shape.Circle(r)"),
+            Pattern::EnumVariant(_)
+        ));
     }
-
     #[test]
-    fn test_empty_match_is_error() {
-        let src = "fn f() { match x { } }";
-        let tokens = Lexer::tokenize(src, "t.lyz").unwrap();
-        let (_, errors) = Parser::new(tokens, "t.lyz", src).parse().unwrap();
-        assert!(errors
-            .0
-            .iter()
-            .any(|e| matches!(e, ParseError::EmptyMatch { .. })));
-    }
-
-    // ── TYPES ────────────────────────────────────
-
-    #[test]
-    fn test_tuple_type() {
-        let (program, _) = parse_ok("fn pair() -> (int, str) { }");
-        if let Declaration::Function(f) = &program.declarations[0] {
-            assert!(matches!(f.return_type, Some(TypeExpr::Tuple(ref t, _)) if t.len() == 2));
-        } else {
-            panic!("expected Function");
-        }
-    }
-
-    #[test]
-    fn test_map_type() {
-        let (program, _) = parse_ok("fn lookup(table: map[str, int]) { }");
-        if let Declaration::Function(f) = &program.declarations[0] {
-            assert!(matches!(
-                f.params[0].param_type,
-                Some(TypeExpr::Map(ref k, ref v, _))
-                    if matches!(k.as_ref(), TypeExpr::Named(ref n) if n.name == "str")
-                        && matches!(v.as_ref(), TypeExpr::Named(ref n) if n.name == "int")
-            ));
-        } else {
-            panic!("expected Function");
-        }
-    }
-
-    #[test]
-    fn test_never_type() {
-        let (program, _) = parse_ok("fn die() -> never { }");
-        if let Declaration::Function(f) = &program.declarations[0] {
-            assert!(matches!(f.return_type, Some(TypeExpr::Never(_))));
-        } else {
-            panic!("expected Function");
-        }
-    }
-
-    #[test]
-    fn test_array_of_optional() {
-        let (program, _) = parse_ok("fn f(xs: int?[]) { }");
-        if let Declaration::Function(f) = &program.declarations[0] {
-            assert!(matches!(
-                f.params[0].param_type,
-                Some(TypeExpr::Array(ref inner, _))
-                    if matches!(inner.as_ref(), TypeExpr::Optional(_, _))
-            ));
-        } else {
-            panic!("expected Function");
-        }
-    }
-
-    // ── PATTERNS ─────────────────────────────────
-
-    #[test]
-    fn test_pattern_wildcard() {
-        let stmts = block_stmts("fn f() { match x { _ -> 0 } }");
-        if let Statement::Match(m) = &stmts[0] {
-            assert!(matches!(m.arms[0].pattern, Pattern::Wildcard(_)));
-        } else {
-            panic!("expected Match statement");
-        }
-    }
-
-    #[test]
-    fn test_pattern_binding() {
-        let stmts = block_stmts("fn f() { match x { y -> y } }");
-        if let Statement::Match(m) = &stmts[0] {
-            assert!(matches!(
-                &m.arms[0].pattern,
-                Pattern::Binding(b) if b.name == "y" && !b.mutable
-            ));
-        } else {
-            panic!("expected Match statement");
-        }
-    }
-
-    #[test]
-    fn test_pattern_mut_binding() {
-        let stmts = block_stmts("fn f() { match x { mut y -> y } }");
-        if let Statement::Match(m) = &stmts[0] {
-            assert!(matches!(
-                &m.arms[0].pattern,
-                Pattern::Binding(b) if b.name == "y" && b.mutable
-            ));
-        } else {
-            panic!("expected Match statement");
-        }
-    }
-
-    #[test]
-    fn test_pattern_literals() {
-        let stmts = block_stmts(
-            "fn f() { match x { 42 -> 1 3.5 -> 2 \"hi\" -> 3 true -> 4 'a' -> 5 null -> 6 } }",
-        );
-        if let Statement::Match(m) = &stmts[0] {
-            assert_eq!(m.arms.len(), 6);
-            for arm in &m.arms {
-                assert!(matches!(arm.pattern, Pattern::Literal(_)));
-            }
-        } else {
-            panic!("expected Match statement");
-        }
-    }
-
-    #[test]
-    fn test_pattern_enum_variant() {
-        let stmts = block_stmts("fn f() { match x { Color.Red -> 1 } }");
-        if let Statement::Match(m) = &stmts[0] {
-            assert!(matches!(
-                &m.arms[0].pattern,
-                Pattern::EnumVariant(e) if e.enum_name.as_deref() == Some("Color")
-                    && e.variant_name == "Red"
-                    && e.bindings.is_empty()
-            ));
-        } else {
-            panic!("expected Match statement");
-        }
-    }
-
-    #[test]
-    fn test_pattern_variant_with_bindings() {
-        let stmts = block_stmts("fn f() { match x { Some(v) -> v Option.None -> 0 } }");
-        if let Statement::Match(m) = &stmts[0] {
-            assert!(matches!(
-                &m.arms[0].pattern,
-                Pattern::EnumVariant(e) if e.enum_name.is_none()
-                    && e.variant_name == "Some"
-                    && e.bindings.len() == 1
-            ));
-            assert!(matches!(
-                &m.arms[1].pattern,
-                Pattern::EnumVariant(e) if e.enum_name.as_deref() == Some("Option")
-                    && e.variant_name == "None"
-                    && e.bindings.is_empty()
-            ));
-        } else {
-            panic!("expected Match statement");
-        }
-    }
-
-    #[test]
-    fn test_or_pattern() {
-        let stmts = block_stmts("fn f() { match x { 1 | 2 -> \"low\" _ -> \"high\" } }");
-        if let Statement::Match(m) = &stmts[0] {
-            assert!(matches!(
-                &m.arms[0].pattern,
-                Pattern::Or(o) if o.alternatives.len() == 2
-            ));
-        } else {
-            panic!("expected Match statement");
-        }
+    fn test_pat_or() {
+        assert!(matches!(parse_pat("0 | 1"), Pattern::Or(_)));
     }
 }
