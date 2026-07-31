@@ -17,7 +17,7 @@ pub struct Parser {
     errors: ParseErrors,
 }
 
-#[allow(clippy::result_large_err)]
+#[allow(clippy::result_large_err, dead_code)]
 impl Parser {
     pub fn new(tokens: Vec<Token>, file: impl Into<String>, source: impl Into<String>) -> Self {
         Parser {
@@ -71,13 +71,19 @@ impl Parser {
         })
     }
 
+    fn parse_block(&mut self) -> Result<Block, ParseError> {
+        Err(self.error_hint(
+            "a statement",
+            "Statements start with let, const, if, while, for, match, return, or an expression",
+        ))
+    }
+
     // ── NAVIGATION ──────────────────────────────
 
     fn peek(&self) -> &Token {
         &self.tokens[self.pos.min(self.tokens.len() - 1)]
     }
 
-    #[allow(dead_code)]
     fn peek_ahead(&self, n: usize) -> &Token {
         let idx = (self.pos + n).min(self.tokens.len() - 1);
         &self.tokens[idx]
@@ -95,7 +101,6 @@ impl Parser {
         tok
     }
 
-    #[allow(dead_code)]
     fn expect(&mut self, kind: TokenKind) -> Result<Token, ParseError> {
         if self.peek().kind == kind {
             return Ok(self.advance());
@@ -109,7 +114,6 @@ impl Parser {
         })
     }
 
-    #[allow(dead_code)]
     fn expect_hint(&mut self, kind: TokenKind, hint: &str) -> Result<Token, ParseError> {
         if self.peek().kind == kind {
             return Ok(self.advance());
@@ -123,7 +127,6 @@ impl Parser {
         })
     }
 
-    #[allow(dead_code)]
     fn advance_if(&mut self, kind: TokenKind) -> bool {
         if self.peek().kind == kind {
             self.advance();
@@ -147,7 +150,6 @@ impl Parser {
         self.peek().span
     }
 
-    #[allow(dead_code)]
     fn prev_span(&self) -> Span {
         if self.pos == 0 {
             self.peek().span
@@ -156,7 +158,6 @@ impl Parser {
         }
     }
 
-    #[allow(dead_code)]
     fn error_hint(&self, expected: impl Into<String>, hint: impl Into<String>) -> ParseError {
         ParseError::UnexpectedToken {
             expected: expected.into(),
@@ -167,7 +168,6 @@ impl Parser {
         }
     }
 
-    #[allow(dead_code)]
     fn expect_identifier(&mut self, context: &str) -> Result<(String, Span), ParseError> {
         match &self.peek().kind {
             TokenKind::Identifier(n) => {
