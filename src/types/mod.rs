@@ -3,6 +3,7 @@ pub mod env;
 pub mod error;
 
 pub use env::TypeEnvironment;
+pub use checker::TypeChecker;
 
 /// The resolved type of a LYZARD value
 /// "Resolved" = fully known after type inference, no unknowns
