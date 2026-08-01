@@ -33,7 +33,7 @@ impl Interpreter {
     pub fn new() -> Self {
         let mut env = Environment::new();
         for (name, _, func) in all_builtins() {
-            env.define(name, Value::Builtin { name, func });
+            env.define(name.to_string(), Value::Builtin { name, func });
         }
         Interpreter {
             env,
@@ -52,7 +52,7 @@ impl Interpreter {
         for decl in &program.declarations {
             if let Declaration::Function(f) = decl {
                 shared.borrow_mut().define(
-                    &f.name,
+                    f.name.clone(),
                     Value::Function {
                         name: f.name.clone(),
                         params: f.params.clone(),
@@ -71,11 +71,11 @@ impl Interpreter {
                 Declaration::Function(_) => {}
                 Declaration::Let(d) => {
                     let value = self.eval_expr(&d.value)?;
-                    self.env.define(&d.name, value);
+                    self.env.define(d.name.clone(), value);
                 }
                 Declaration::Const(c) => {
                     let value = self.eval_expr(&c.value)?;
-                    self.env.define(&c.name, value);
+                    self.env.define(c.name.clone(), value);
                 }
                 Declaration::Statement(s) => {
                     self.eval_statement(s)?;
@@ -97,8 +97,7 @@ impl Interpreter {
             Expr::Null(_) => Ok(Value::Null),
             Expr::Identifier(id) => {
                 self.env
-                    .lookup(&id.name)
-                    .cloned()
+                    .get(&id.name)
                     .ok_or_else(|| RuntimeError::UndefinedVariable {
                         name: id.name.clone(),
                         span: Some(id.span),
@@ -240,7 +239,7 @@ impl Interpreter {
                 let saved_env = std::mem::replace(&mut self.env, (*closure).borrow().clone());
                 self.env.push_call(&name)?;
                 for (param, arg) in params.iter().filter(|p| !p.is_self).zip(args) {
-                    self.env.define(&param.name, arg);
+                    self.env.define(param.name.clone(), arg);
                 }
                 let result = match &body {
                     FnBody::Block(b) => self.eval_block(b)?,
@@ -329,14 +328,8 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         match target {
             Expr::Identifier(id) => {
-                if self.env.set(&id.name, value.clone()) {
-                    Ok(value)
-                } else {
-                    Err(RuntimeError::UndefinedVariable {
-                        name: id.name.clone(),
-                        span: Some(id.span),
-                    })
-                }
+                self.env.set(&id.name, value.clone())?;
+                Ok(value)
             }
             Expr::Field(f) => {
                 let obj = self.eval_expr(&f.object)?;
@@ -461,7 +454,7 @@ impl Interpreter {
             other => other.type_name().to_string(),
         };
         let method_name = format!("{type_base}_{method}");
-        if let Some(fn_val) = self.env.lookup(&method_name).cloned() {
+        if let Some(fn_val) = self.env.get(&method_name) {
             return self.call_function(fn_val, vec![obj], span);
         }
         Err(RuntimeError::UndefinedFunction {
@@ -521,12 +514,12 @@ impl Interpreter {
             Statement::Expression(e) => self.eval_expr(&e.expr),
             Statement::Let(d) => {
                 let value = self.eval_expr(&d.value)?;
-                self.env.define(&d.name, value);
+                self.env.define(d.name.clone(), value);
                 Ok(Value::Void)
             }
             Statement::Const(c) => {
                 let value = self.eval_expr(&c.value)?;
-                self.env.define(&c.name, value);
+                self.env.define(c.name.clone(), value);
                 Ok(Value::Void)
             }
             Statement::Return(r) => {
@@ -584,7 +577,7 @@ impl Interpreter {
                     Value::Array(items) => {
                         for item in items {
                             self.env.push_scope();
-                            self.env.define(&f.variable, item);
+                            self.env.define(f.variable.clone(), item);
                             let r = self.eval_block(&f.body)?;
                             self.env.pop_scope();
                             if r.is_signal() {
@@ -604,7 +597,7 @@ impl Interpreter {
                     Value::Str(s) => {
                         for ch in s.chars() {
                             self.env.push_scope();
-                            self.env.define(&f.variable, Value::Char(ch));
+                            self.env.define(f.variable.clone(), Value::Char(ch));
                             let r = self.eval_block(&f.body)?;
                             self.env.pop_scope();
                             if r.is_signal() {
@@ -839,7 +832,7 @@ fn pattern_matches(pattern: &Pattern, value: &Value) -> bool {
 fn bind_pattern(env: &mut Environment, pattern: &Pattern, value: Value) {
     match pattern {
         Pattern::Binding(bp) => {
-            env.define(&bp.name, value);
+            env.define(bp.name.clone(), value);
         }
         Pattern::EnumVariant(ev) => {
             if let Value::Struct { fields, .. } = value {
@@ -869,8 +862,9 @@ mod interpreter_tests {
 
     fn interp() -> Interpreter {
         let mut i = Interpreter::new();
-        i.env.define("x", Value::Int(42));
-        i.env.define("name", Value::Str("hi".to_string()));
+        i.env.define("x".to_string(), Value::Int(42));
+        i.env
+            .define("name".to_string(), Value::Str("hi".to_string()));
         i
     }
 
@@ -1656,7 +1650,7 @@ mod call_access_tests {
     #[test]
     fn test_closure_capture() {
         let mut i = Interpreter::new();
-        i.env.define("base", Value::Int(10));
+        i.env.define("base".to_string(), Value::Int(10));
         let f = Value::Function {
             name: "addBase".to_string(),
             params: vec![param("n")],
@@ -1672,7 +1666,7 @@ mod call_access_tests {
     #[test]
     fn test_run_and_call_function() {
         let mut i = run_source("fn add(a, b) { return a + b }");
-        let f = i.env.lookup("add").unwrap().clone();
+        let f = i.env.get("add").unwrap();
         assert_eq!(
             i.call_function(f, vec![Value::Int(2), Value::Int(3)], s())
                 .unwrap(),
@@ -1683,7 +1677,7 @@ mod call_access_tests {
     #[test]
     fn test_recursive_function() {
         let mut i = run_source("fn fact(n) { if n <= 1 { return 1 } return n * fact(n - 1) }");
-        let f = i.env.lookup("fact").unwrap().clone();
+        let f = i.env.get("fact").unwrap();
         assert_eq!(
             i.call_function(f, vec![Value::Int(5)], s()).unwrap(),
             Value::Int(120)
@@ -1694,7 +1688,7 @@ mod call_access_tests {
     fn test_field_access() {
         let mut i = Interpreter::new();
         i.env.define(
-            "p",
+            "p".to_string(),
             Value::Struct {
                 name: "Point".to_string(),
                 fields: HashMap::from([
@@ -1715,7 +1709,7 @@ mod call_access_tests {
     fn test_field_not_found() {
         let mut i = Interpreter::new();
         i.env.define(
-            "p",
+            "p".to_string(),
             Value::Struct {
                 name: "Point".to_string(),
                 fields: HashMap::from([("x".to_string(), Value::Int(3))]),
@@ -1736,7 +1730,7 @@ mod call_access_tests {
     fn test_index_array() {
         let mut i = Interpreter::new();
         i.env.define(
-            "arr",
+            "arr".to_string(),
             Value::Array(vec![Value::Int(10), Value::Int(20), Value::Int(30)]),
         );
         let e = Expr::Index(IndexExpr {
@@ -1751,7 +1745,7 @@ mod call_access_tests {
     fn test_index_negative() {
         let mut i = Interpreter::new();
         i.env.define(
-            "arr",
+            "arr".to_string(),
             Value::Array(vec![Value::Int(10), Value::Int(20), Value::Int(30)]),
         );
         let e = Expr::Index(IndexExpr {
@@ -1765,7 +1759,8 @@ mod call_access_tests {
     #[test]
     fn test_index_out_of_bounds() {
         let mut i = Interpreter::new();
-        i.env.define("arr", Value::Array(vec![Value::Int(10)]));
+        i.env
+            .define("arr".to_string(), Value::Array(vec![Value::Int(10)]));
         let e = Expr::Index(IndexExpr {
             object: Box::new(ident("arr")),
             index: Box::new(int_lit(5)),
@@ -1780,14 +1775,14 @@ mod call_access_tests {
     #[test]
     fn test_assign_variable() {
         let mut i = Interpreter::new();
-        i.env.define("x", Value::Int(1));
+        i.env.define("x".to_string(), Value::Int(1));
         let e = Expr::Assign(AssignExpr {
             target: Box::new(ident("x")),
             value: Box::new(int_lit(99)),
             span: s(),
         });
         assert_eq!(i.eval_expr(&e).unwrap(), Value::Int(99));
-        assert_eq!(i.env.lookup("x"), Some(&Value::Int(99)));
+        assert_eq!(i.env.get("x"), Some(Value::Int(99)));
     }
 
     #[test]
@@ -1808,7 +1803,7 @@ mod call_access_tests {
     fn test_assign_array_index() {
         let mut i = Interpreter::new();
         i.env.define(
-            "arr",
+            "arr".to_string(),
             Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
         );
         let e = Expr::Assign(AssignExpr {
