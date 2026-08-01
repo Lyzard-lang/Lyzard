@@ -146,142 +146,231 @@ impl TypeChecker {
     }
 
     // ══════════════════════════════════════════
-    //   PASS 2: DECLARATION BODIES
+    //   PASS 2: CHECK DECLARATIONS
     // ══════════════════════════════════════════
 
-    fn check_declaration(&mut self, decl: &Declaration) {
+    pub fn check_declaration(&mut self, decl: &Declaration) {
         match decl {
-            Declaration::Function(f) => {
-                self.env.push_scope();
-                let ret = f
-                    .return_type
-                    .as_ref()
-                    .map(|t| self.resolve_type(t))
-                    .unwrap_or(ResolvedType::Void);
-                self.env.enter_function(ret);
-                for p in &f.params {
-                    let ty = p
-                        .param_type
-                        .as_ref()
-                        .map(|t| self.resolve_type(t))
-                        .unwrap_or(ResolvedType::Unknown);
-                    self.env.define(p.name.clone(), ty);
-                }
-                match &f.body {
-                    FnBody::Block(b) => self.check_block(b),
-                    FnBody::Arrow(e) => {
-                        self.infer_expr(e);
-                    }
-                }
-                self.env.exit_function();
-                self.env.pop_scope();
-            }
-            Declaration::Let(d) => self.check_let(d),
-            Declaration::Const(d) => self.check_const(d),
-            Declaration::Statement(s) => self.check_statement(s),
-            _ => {}
+            Declaration::Function(f)  => self.check_fn(f),
+            Declaration::Let(l)       => self.check_let(l),
+            Declaration::Const(c)     => self.check_const(c),
+            Declaration::Impl(i)      => self.check_impl(i),
+            Declaration::Statement(s) => { self.check_statement(s); }
+            _                         => {}
         }
     }
 
-    fn check_let(&mut self, d: &LetDecl) {
-        let val_ty = self.infer_expr(&d.value);
-        if let Some(ann) = &d.type_annotation {
-            let ann_ty = self.resolve_type(ann);
-            if !val_ty.is_error() && !ann_ty.is_assignable_from(&val_ty) {
-                self.type_mismatch(ann_ty, val_ty.clone(), d.span, "variable declaration");
+    fn check_fn(&mut self, decl: &FnDecl) {
+        self.env.push_scope();
+
+        // Register generic params
+        for generic in &decl.generics {
+            self.env.define(generic.name.clone(), ResolvedType::TypeParam(generic.name.clone()));
+        }
+
+        // Register params
+        for param in &decl.params {
+            if param.is_self {
+                if let Some(self_ty) = self.env.self_type().cloned() {
+                    self.env.define("self".to_string(), self_ty);
+                }
+                continue;
+            }
+            let ty = param.param_type.as_ref()
+                .map(|t| self.resolve_type(t))
+                .unwrap_or(ResolvedType::Unknown);
+            self.env.define(param.name.clone(), ty);
+        }
+
+        // Set return type context
+        let return_type = decl.return_type.as_ref()
+            .map(|t| self.resolve_type(t))
+            .unwrap_or(ResolvedType::Void);
+        self.env.enter_function(return_type.clone());
+
+        // Check body
+        match &decl.body {
+            FnBody::Block(block) => {
+                self.check_block(block);
+                // TODO: check all paths return (requires control flow analysis)
+            }
+            FnBody::Arrow(expr) => {
+                let expr_ty = self.infer_expr(expr);
+                if !return_type.is_assignable_from(&expr_ty) && !expr_ty.is_error() {
+                    self.type_mismatch(return_type, expr_ty, expr.span(), "arrow function return");
+                }
             }
         }
-        self.env.define(d.name.clone(), val_ty);
+
+        self.env.exit_function();
+        self.env.pop_scope();
     }
 
-    fn check_const(&mut self, d: &ConstDecl) {
-        let val_ty = self.infer_expr(&d.value);
-        if let Some(ann) = &d.type_annotation {
-            let ann_ty = self.resolve_type(ann);
-            if !val_ty.is_error() && !ann_ty.is_assignable_from(&val_ty) {
-                self.type_mismatch(ann_ty, val_ty.clone(), d.span, "const declaration");
+    fn check_let(&mut self, decl: &LetDecl) {
+        let value_ty = self.infer_expr(&decl.value);
+
+        if let Some(annotation) = &decl.type_annotation {
+            let declared_ty = self.resolve_type(annotation);
+            if !declared_ty.is_assignable_from(&value_ty) && !value_ty.is_error() {
+                self.type_mismatch(declared_ty.clone(), value_ty.clone(), decl.span,
+                    &format!("variable `{}` declaration", decl.name));
             }
+            self.env.define(decl.name.clone(), declared_ty);
+        } else {
+            // Infer type from value
+            self.env.define(decl.name.clone(), value_ty);
         }
-        self.env.define(d.name.clone(), val_ty);
+    }
+
+    fn check_const(&mut self, decl: &ConstDecl) {
+        let value_ty = self.infer_expr(&decl.value);
+        if let Some(annotation) = &decl.type_annotation {
+            let declared_ty = self.resolve_type(annotation);
+            if !declared_ty.is_assignable_from(&value_ty) && !value_ty.is_error() {
+                self.type_mismatch(declared_ty.clone(), value_ty, decl.span, "constant declaration");
+            }
+            self.env.define(decl.name.clone(), declared_ty);
+        } else {
+            self.env.define(decl.name.clone(), value_ty);
+        }
+    }
+
+    fn check_impl(&mut self, decl: &ImplDecl) {
+        let self_ty = ResolvedType::Struct(decl.target.clone());
+        self.env.enter_impl(self_ty);
+        for method in &decl.methods {
+            self.check_fn(method);
+        }
+        self.env.exit_impl();
+    }
+
+    // ══════════════════════════════════════════
+    //   CHECK STATEMENTS
+    // ══════════════════════════════════════════
+
+    pub fn check_statement(&mut self, stmt: &Statement) {
+        match stmt {
+            Statement::Let(l)       => self.check_let(l),
+            Statement::Const(c)     => self.check_const(c),
+            Statement::Return(r)    => self.check_return(r),
+            Statement::If(i)        => self.check_if(i),
+            Statement::While(w)     => self.check_while(w),
+            Statement::For(f)       => self.check_for(f),
+            Statement::Loop(l)      => self.check_loop_stmt(l),
+            Statement::Match(m)     => self.check_match(m),
+            Statement::Block(b)     => self.check_block(b),
+            Statement::Expression(e)=> { self.infer_expr(&e.expr); }
+            Statement::Spawn(s)     => self.check_block(&s.body),
+            Statement::Break(_) | Statement::Continue(_) => {}
+        }
     }
 
     fn check_block(&mut self, block: &Block) {
         self.env.push_scope();
         for stmt in &block.statements {
-            if self.errors.len() >= MAX_ERRORS {
-                break;
-            }
             self.check_statement(stmt);
         }
         self.env.pop_scope();
     }
 
-    fn check_statement(&mut self, stmt: &Statement) {
-        match stmt {
-            Statement::Let(d) => self.check_let(d),
-            Statement::Const(d) => self.check_const(d),
-            Statement::Return(s) => {
-                if let Some(v) = &s.value {
-                    let ty = self.infer_expr(v);
-                    if let Some(expected) = self.env.expected_return_type() {
-                        if !ty.is_error() && !expected.is_assignable_from(&ty) {
-                            self.type_mismatch(expected.clone(), ty, s.span, "return");
-                        }
-                    }
-                }
+    fn check_return(&mut self, stmt: &ReturnStmt) {
+        let expected = self.env.expected_return_type().cloned().unwrap_or(ResolvedType::Void);
+        let found    = stmt.value.as_ref().map(|e| self.infer_expr(e)).unwrap_or(ResolvedType::Void);
+
+        if !expected.is_assignable_from(&found) && !found.is_error() && !expected.is_error() {
+            self.type_mismatch(expected, found, stmt.span, "return statement");
+        }
+    }
+
+    fn check_if(&mut self, stmt: &IfStmt) {
+        let cond_ty = self.infer_expr(&stmt.condition);
+        if !cond_ty.is_error() && !cond_ty.is_bool() {
+            self.push_error(TypeError::NonBoolCondition {
+                found: cond_ty, span: stmt.condition.span(),
+                file: self.file.clone(), context: "if".to_string(),
+            });
+        }
+        self.check_block(&stmt.then_branch);
+        for branch in &stmt.else_if_branches {
+            let cond = self.infer_expr(&branch.condition);
+            if !cond.is_error() && !cond.is_bool() {
+                self.push_error(TypeError::NonBoolCondition {
+                    found: cond, span: branch.condition.span(),
+                    file: self.file.clone(), context: "else if".to_string(),
+                });
             }
-            Statement::If(s) => {
-                let cond_ty = self.infer_expr(&s.condition);
-                if !cond_ty.is_error() && !cond_ty.is_bool() {
-                    self.push_error(TypeError::NonBoolCondition {
-                        found: cond_ty,
-                        span: s.condition.span(),
-                        file: self.file.clone(),
-                        context: "if".to_string(),
-                    });
-                }
-                self.check_block(&s.then_branch);
-                for eif in &s.else_if_branches {
-                    let c = self.infer_expr(&eif.condition);
-                    if !c.is_error() && !c.is_bool() {
-                        self.push_error(TypeError::NonBoolCondition {
-                            found: c,
-                            span: eif.condition.span(),
-                            file: self.file.clone(),
-                            context: "if".to_string(),
-                        });
-                    }
-                    self.check_block(&eif.body);
-                }
-                if let Some(eb) = &s.else_branch {
-                    self.check_block(eb);
-                }
+            self.check_block(&branch.body);
+        }
+        if let Some(else_b) = &stmt.else_branch { self.check_block(else_b); }
+    }
+
+    fn check_while(&mut self, stmt: &WhileStmt) {
+        let cond_ty = self.infer_expr(&stmt.condition);
+        if !cond_ty.is_error() && !cond_ty.is_bool() {
+            self.push_error(TypeError::NonBoolCondition {
+                found: cond_ty, span: stmt.condition.span(),
+                file: self.file.clone(), context: "while".to_string(),
+            });
+        }
+        self.env.enter_loop();
+        self.check_block(&stmt.body);
+        self.env.exit_loop();
+    }
+
+    fn check_for(&mut self, stmt: &ForStmt) {
+        let iter_ty = self.infer_expr(&stmt.iterable);
+        // Determine the element type of the iterable
+        let elem_ty = match &iter_ty {
+            ResolvedType::Array(inner) => *inner.clone(),
+            other if other.is_error() => ResolvedType::Error,
+            other => {
+                self.push_error(TypeError::TypeMismatch {
+                    expected: ResolvedType::Array(Box::new(ResolvedType::Unknown)),
+                    found: other.clone(),
+                    span: stmt.iterable.span(),
+                    file: self.file.clone(),
+                    context: "for loop — iterable must be an array".to_string(),
+                });
+                ResolvedType::Error
             }
-            Statement::While(s) => {
-                let c = self.infer_expr(&s.condition);
-                if !c.is_error() && !c.is_bool() {
-                    self.push_error(TypeError::NonBoolCondition {
-                        found: c,
-                        span: s.condition.span(),
-                        file: self.file.clone(),
-                        context: "while".to_string(),
-                    });
-                }
-                self.check_block(&s.body);
+        };
+        self.env.enter_loop();
+        self.env.push_scope();
+        self.env.define(stmt.variable.clone(), elem_ty);
+        for s in &stmt.body.statements { self.check_statement(s); }
+        self.env.pop_scope();
+        self.env.exit_loop();
+    }
+
+    fn check_loop_stmt(&mut self, stmt: &LoopStmt) {
+        self.env.enter_loop();
+        self.check_block(&stmt.body);
+        self.env.exit_loop();
+    }
+
+    fn check_match(&mut self, stmt: &MatchStmt) {
+        let _subject_ty = self.infer_expr(&stmt.subject);
+        for arm in &stmt.arms {
+            self.env.push_scope();
+            // Bind pattern variables — type them as Unknown for now
+            self.bind_pattern_types(&arm.pattern);
+            match &arm.body {
+                MatchBody::Expr(e)  => { self.infer_expr(e); }
+                MatchBody::Block(b) => self.check_block(b),
             }
-            Statement::For(s) => {
-                let it = self.infer_expr(&s.iterable);
-                self.env.push_scope();
-                match it {
-                    ResolvedType::Array(inner) => self.env.define(s.variable.clone(), *inner),
-                    _ => self.env.define(s.variable.clone(), ResolvedType::Unknown),
-                }
-                self.check_block(&s.body);
-                self.env.pop_scope();
+            self.env.pop_scope();
+        }
+    }
+
+    fn bind_pattern_types(&mut self, pattern: &Pattern) {
+        match pattern {
+            Pattern::Binding(b) => {
+                self.env.define(b.name.clone(), ResolvedType::Unknown);
             }
-            Statement::Block(b) => self.check_block(b),
-            Statement::Expression(e) => {
-                self.infer_expr(&e.expr);
+            Pattern::Or(o) => {
+                if let Some(first) = o.alternatives.first() {
+                    self.bind_pattern_types(first);
+                }
             }
             _ => {}
         }
@@ -919,5 +1008,64 @@ mod infer_tests {
             &errs.0[0],
             TypeError::UnknownStructField { field, .. } if field == "z"
         ));
+    }
+}
+
+#[cfg(test)]
+mod statement_check_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn check(src: &str) -> TypeErrors {
+        let t = Lexer::tokenize(src, "t.lyz").unwrap();
+        let (p, _) = Parser::new(t, "t.lyz", src).parse().unwrap();
+        TypeChecker::new(src, "t.lyz").check(&p)
+    }
+
+    #[test]
+    fn test_return_correct_type()  { assert!(check("fn f() -> int { return 42 }").is_empty()); }
+    #[test]
+    fn test_return_wrong_type()    {
+        let errs = check("fn f() -> int { return \"hello\" }");
+        assert!(!errs.is_empty());
+        assert!(matches!(&errs.0[0], TypeError::TypeMismatch { expected: ResolvedType::Int, found: ResolvedType::Str, .. }));
+    }
+    #[test]
+    fn test_if_bool_cond_ok()      { assert!(check("fn f() { if true { } }").is_empty()); }
+    #[test]
+    fn test_if_int_cond_err()      {
+        let errs = check("fn f() { if 42 { } }");
+        assert!(!errs.is_empty());
+        assert!(matches!(&errs.0[0], TypeError::NonBoolCondition { .. }));
+    }
+    #[test]
+    fn test_while_bool_ok()        { assert!(check("fn f() { while true { } }").is_empty()); }
+    #[test]
+    fn test_while_int_err()        {
+        let errs = check("fn f() { while 1 { } }");
+        assert!(!errs.is_empty());
+        assert!(matches!(&errs.0[0], TypeError::NonBoolCondition { context, .. } if context == "while"));
+    }
+    #[test]
+    fn test_for_array_ok()         { assert!(check("fn f() { for i in [1,2,3] { } }").is_empty()); }
+    #[test]
+    fn test_for_non_array_err()    {
+        let errs = check("fn f() { for i in 42 { } }");
+        assert!(!errs.is_empty());
+        assert!(matches!(&errs.0[0], TypeError::TypeMismatch { .. }));
+    }
+    #[test]
+    fn test_let_type_inferred()    { assert!(check("fn f() { let x = 42 let y = x + 1 }").is_empty()); }
+    #[test]
+    fn test_for_var_typed_correctly() {
+        // After for i in [1,2,3], i should be int
+        let src = "fn f() { for i in [1, 2, 3] { let r = i + 1 } }";
+        assert!(check(src).is_empty());
+    }
+    #[test]
+    fn test_nested_fn_calls_ok() {
+        let src = "fn double(x: int) -> int { return x * 2 }\nfn main() { let r = double(double(5)) }";
+        assert!(check(src).is_empty());
     }
 }
