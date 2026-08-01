@@ -832,6 +832,13 @@ impl Parser {
             self.skip_newlines();
             let body = if self.check(TokenKind::LeftBrace) {
                 MatchBody::Block(self.parse_block()?)
+            } else if self.check(TokenKind::Return) {
+                let stmt = self.parse_statement()?;
+                let span = s.merge(self.prev_span());
+                MatchBody::Block(Block {
+                    statements: vec![stmt],
+                    span,
+                })
             } else {
                 MatchBody::Expr(self.parse_expr()?)
             };

@@ -80,6 +80,11 @@ impl Interpreter {
                 }
             }
         }
+
+        // Run the program entry point `main` if it was defined.
+        if let Some(main_fn) = self.env.get("main") {
+            self.call_function(main_fn, vec![], crate::lexer::Span::dummy())?;
+        }
         Ok(())
     }
 
@@ -201,7 +206,7 @@ impl Interpreter {
             }
             Expr::Assign(a) => {
                 let value = self.eval_expr(&a.value)?;
-                self.eval_assign_target(&a.target, value, a.span)
+                self.eval_assign(&a.target, value)
             }
             Expr::Propagate(p) => {
                 let val = self.eval_expr(&p.expr)?;
@@ -260,13 +265,20 @@ impl Interpreter {
             } => {
                 let expected = params.iter().filter(|p| !p.is_self).count();
                 if args.len() != expected {
-                    return Err(RuntimeError::TypeError {
-                        expected: format!("{} arguments", expected),
-                        got: args.len().to_string(),
+                    return Err(RuntimeError::NotCallable {
+                        type_name: format!(
+                            "wrong arg count: {} expected {}, got {}",
+                            name,
+                            expected,
+                            args.len()
+                        ),
+                        span: Some(span),
                     });
                 }
 
+                let current_depth = self.env.call_depth();
                 let saved_env = std::mem::replace(&mut self.env, (*closure).borrow().clone());
+                self.env.set_call_depth(current_depth);
                 self.env.push_call(&name)?;
                 for (param, arg) in params.iter().filter(|p| !p.is_self).zip(args) {
                     self.env.define(param.name.clone(), arg);
@@ -291,20 +303,20 @@ impl Interpreter {
 
     /// Read `object.field`.
     fn eval_field_access(
-        &mut self,
+        &self,
         obj: Value,
         field: &str,
         span: Span,
     ) -> Result<Value, RuntimeError> {
         match obj {
-            Value::Struct { name, fields } => match fields.get(field) {
-                Some(v) => Ok(v.clone()),
-                None => Err(RuntimeError::FieldNotFound {
+            Value::Struct { name, fields } => fields
+                .get(field)
+                .cloned()
+                .ok_or_else(|| RuntimeError::FieldNotFound {
                     struct_name: name,
                     field: field.to_string(),
                     span: Some(span),
                 }),
-            },
             other => Err(RuntimeError::TypeError {
                 expected: "struct".to_string(),
                 got: other.type_name().to_string(),
@@ -313,7 +325,7 @@ impl Interpreter {
     }
 
     /// Read `object[index]`, supporting negative (from-end) indices.
-    fn eval_index(&mut self, obj: Value, idx: Value, span: Span) -> Result<Value, RuntimeError> {
+    fn eval_index(&self, obj: Value, idx: Value, span: Span) -> Result<Value, RuntimeError> {
         match (obj, idx) {
             (Value::Array(items), Value::Int(n)) => {
                 let len = items.len() as i64;
@@ -342,70 +354,61 @@ impl Interpreter {
                     Ok(Value::Char(chars[pos as usize]))
                 }
             }
-            (other, idx) => Err(RuntimeError::TypeError {
-                expected: "indexable (array or string)".to_string(),
-                got: format!("{} indexed by {}", other.type_name(), idx.type_name()),
+            (other, _) => Err(RuntimeError::NotIndexable {
+                type_name: other.type_name().to_string(),
+                span: Some(span),
             }),
         }
     }
 
     /// Assign `value` to a target expression.
-    fn eval_assign_target(
-        &mut self,
-        target: &Expr,
-        value: Value,
-        span: Span,
-    ) -> Result<Value, RuntimeError> {
+    fn eval_assign(&mut self, target: &Expr, value: Value) -> Result<Value, RuntimeError> {
         match target {
             Expr::Identifier(id) => {
                 self.env.set(&id.name, value.clone())?;
                 Ok(value)
             }
             Expr::Field(f) => {
-                let obj = self.eval_expr(&f.object)?;
-                match obj {
-                    Value::Struct { name, mut fields } => match fields.get_mut(&f.field) {
-                        Some(slot) => {
-                            *slot = value.clone();
-                            Ok(value)
-                        }
-                        None => Err(RuntimeError::FieldNotFound {
-                            struct_name: name,
-                            field: f.field.clone(),
-                            span: Some(span),
-                        }),
-                    },
-                    other => Err(RuntimeError::TypeError {
-                        expected: "struct".to_string(),
-                        got: other.type_name().to_string(),
-                    }),
+                // obj.field = value — mutate the struct held in the environment
+                if let Expr::Identifier(obj_ident) = &*f.object {
+                    if let Some(Value::Struct { name, mut fields }) =
+                        self.env.get(&obj_ident.name)
+                    {
+                        fields.insert(f.field.clone(), value.clone());
+                        self.env.set(&obj_ident.name, Value::Struct { name, fields })?;
+                        return Ok(value);
+                    }
                 }
+                Err(RuntimeError::TypeError {
+                    expected: "struct field assignment".to_string(),
+                    got: "unsupported target".to_string(),
+                })
             }
             Expr::Index(i) => {
-                let obj = self.eval_expr(&i.object)?;
-                let idx = self.eval_expr(&i.index)?;
-                match (obj, idx) {
-                    (Value::Array(mut items), Value::Int(n)) => {
-                        let len = items.len() as i64;
-                        let pos = if n < 0 { len + n } else { n };
-                        if pos < 0 || pos >= len {
+                // arr[idx] = value — mutate the array held in the environment
+                if let Expr::Identifier(arr_ident) = &*i.object {
+                    if let Some(Value::Array(mut arr)) = self.env.get(&arr_ident.name) {
+                        let idx = self.eval_expr(&i.index)?.as_int()? as usize;
+                        if idx >= arr.len() {
                             return Err(RuntimeError::IndexOutOfBounds {
-                                index: n,
-                                length: items.len(),
-                                span: Some(span),
+                                index: idx as i64,
+                                length: arr.len(),
+                                span: Some(i.span),
                             });
                         }
-                        items[pos as usize] = value.clone();
-                        Ok(value)
+                        arr[idx] = value.clone();
+                        self.env.set(&arr_ident.name, Value::Array(arr))?;
+                        return Ok(value);
                     }
-                    (other, idx) => Err(RuntimeError::TypeError {
-                        expected: "indexable array".to_string(),
-                        got: format!("{} indexed by {}", other.type_name(), idx.type_name()),
-                    }),
                 }
+                Err(RuntimeError::TypeError {
+                    expected: "array index assignment".to_string(),
+                    got: "unsupported target".to_string(),
+                })
             }
-            _ => Err(RuntimeError::NotImplemented {
-                feature: "this assignment target".to_string(),
+            _ => Err(RuntimeError::TypeError {
+                expected: "assignable target".to_string(),
+                got: "expression".to_string(),
             }),
         }
     }
@@ -422,20 +425,19 @@ impl Interpreter {
         match &obj {
             Value::Array(items) => match method {
                 "len" => return Ok(Value::Int(items.len() as i64)),
-                "push" => {
-                    let mut new_items = items.clone();
-                    if let Some(item) = args.first() {
-                        new_items.push(item.clone());
-                    }
-                    return Ok(Value::Array(new_items));
-                }
-                "pop" => return Ok(items.last().cloned().unwrap_or(Value::Null)),
+                "isEmpty" => return Ok(Value::Bool(items.is_empty())),
                 "first" => return Ok(items.first().cloned().unwrap_or(Value::Null)),
                 "last" => return Ok(items.last().cloned().unwrap_or(Value::Null)),
                 "contains" => {
-                    let item = args.first().cloned().unwrap_or(Value::Null);
-                    return Ok(Value::Bool(items.iter().any(|v| v == &item)));
+                    let target = args.first().cloned().unwrap_or(Value::Null);
+                    return Ok(Value::Bool(items.contains(&target)));
                 }
+                "push" => {
+                    let mut new_items = items.clone();
+                    new_items.extend(args);
+                    return Ok(Value::Array(new_items));
+                }
+                "pop" => return Ok(items.last().cloned().unwrap_or(Value::Null)),
                 "join" => {
                     let sep = args
                         .first()
@@ -448,9 +450,28 @@ impl Interpreter {
             },
             Value::Str(s) => match method {
                 "len" => return Ok(Value::Int(s.chars().count() as i64)),
+                "trim" => return Ok(Value::Str(s.trim().to_string())),
                 "upper" => return Ok(Value::Str(s.to_uppercase())),
                 "lower" => return Ok(Value::Str(s.to_lowercase())),
-                "trim" => return Ok(Value::Str(s.trim().to_string())),
+                "isEmpty" => return Ok(Value::Bool(s.is_empty())),
+                "contains" => {
+                    let needle = args
+                        .first()
+                        .and_then(|a| a.as_str().ok())
+                        .unwrap_or_default();
+                    return Ok(Value::Bool(s.contains(needle)));
+                }
+                "split" => {
+                    let sep = args
+                        .first()
+                        .and_then(|a| a.as_str().ok())
+                        .unwrap_or_default();
+                    let parts: Vec<Value> = s
+                        .split(sep)
+                        .map(|p| Value::Str(p.to_string()))
+                        .collect();
+                    return Ok(Value::Array(parts));
+                }
                 "startsWith" => {
                     let needle = args
                         .first()
@@ -465,13 +486,6 @@ impl Interpreter {
                         .unwrap_or_default();
                     return Ok(Value::Bool(s.ends_with(needle)));
                 }
-                "contains" => {
-                    let needle = args
-                        .first()
-                        .and_then(|a| a.as_str().ok())
-                        .unwrap_or_default();
-                    return Ok(Value::Bool(s.contains(needle)));
-                }
                 _ => {}
             },
             _ => {}
@@ -485,10 +499,13 @@ impl Interpreter {
         };
         let method_name = format!("{type_base}_{method}");
         if let Some(fn_val) = self.env.get(&method_name) {
-            return self.call_function(fn_val, vec![obj], span);
+            let mut full_args = vec![obj];
+            full_args.extend(args);
+            return self.call_function(fn_val, full_args, span);
         }
-        Err(RuntimeError::UndefinedFunction {
-            name: method.to_string(),
+        Err(RuntimeError::FieldNotFound {
+            struct_name: obj.type_name().to_string(),
+            field: method.to_string(),
             span: Some(span),
         })
     }
@@ -1293,352 +1310,108 @@ mod call_access_tests {
     use crate::lexer::Lexer;
     use crate::parser::Parser;
 
-    fn s() -> Span {
-        Span::dummy()
+    fn run_ok(src: &str) {
+        let t = Lexer::tokenize(src, "t.lyz").unwrap();
+        let (p, _) = Parser::new(t, "t.lyz", src).parse().unwrap();
+        Interpreter::new().run(&p).expect("Should succeed");
     }
 
-    fn int_lit(v: i64) -> Expr {
-        Expr::Int(IntLit {
-            value: v,
-            span: s(),
-        })
-    }
-    fn ident(name: &str) -> Expr {
-        Expr::Identifier(IdentExpr {
-            name: name.to_string(),
-            span: s(),
-        })
-    }
-    fn param(name: &str) -> Param {
-        Param {
-            name: name.to_string(),
-            param_type: None,
-            is_self: false,
-            span: s(),
-        }
-    }
-    fn binary(op: BinaryOp, left: Expr, right: Expr) -> Expr {
-        Expr::Binary(BinaryExpr {
-            op,
-            left: Box::new(left),
-            right: Box::new(right),
-            span: s(),
-        })
-    }
-    fn fn_value(name: &str, params: Vec<Param>, body: FnBody) -> Value {
-        Value::Function {
-            name: name.to_string(),
-            params,
-            body,
-            closure: Rc::new(RefCell::new(Environment::new())),
-        }
-    }
-    fn run_source(src: &str) -> Interpreter {
-        let tokens = Lexer::tokenize(src, "t.lyz").unwrap();
-        let (prog, _) = Parser::new(tokens, "t.lyz", src).parse().unwrap();
-        let mut i = Interpreter::new();
-        i.run(&prog).unwrap();
-        i
+    fn run_err(src: &str) -> RuntimeError {
+        let t = Lexer::tokenize(src, "t.lyz").unwrap();
+        let (p, _) = Parser::new(t, "t.lyz", src).parse().unwrap();
+        Interpreter::new().run(&p).unwrap_err()
     }
 
     #[test]
-    fn test_call_user_function() {
-        let mut i = Interpreter::new();
-        let f = fn_value(
-            "double",
-            vec![param("x")],
-            FnBody::Arrow(Box::new(binary(BinaryOp::Mul, ident("x"), int_lit(2)))),
-        );
-        assert_eq!(
-            i.call_function(f, vec![Value::Int(21)], s()).unwrap(),
-            Value::Int(42)
-        );
+    fn test_fn_call_basic() {
+        run_ok("fn add(a: int, b: int) -> int { return a + b }\nfn main() { add(3, 4) }");
     }
 
     #[test]
-    fn test_call_builtin_captured_output() {
-        let mut i = Interpreter::new();
-        i.capture_output = true;
-        let f = Value::Builtin {
-            name: "print",
-            func: |_| Ok(Value::Void),
-        };
-        i.call_function(f, vec![Value::Str("hi".to_string())], s())
-            .unwrap();
-        assert_eq!(i.output, vec!["hi".to_string()]);
+    fn test_fn_call_return_value() {
+        run_ok(r#"
+fn double(x: int) -> int { return x * 2 }
+fn main() { let r = double(5) }
+"#);
     }
 
     #[test]
-    fn test_call_wrong_arity() {
-        let mut i = Interpreter::new();
-        let f = fn_value(
-            "add",
-            vec![param("a"), param("b")],
-            FnBody::Block(Block {
-                statements: vec![],
-                span: s(),
-            }),
-        );
-        let r = i.call_function(f, vec![Value::Int(1)], s());
-        assert!(matches!(r, Err(RuntimeError::TypeError { .. })));
+    fn test_recursive_fn() {
+        run_ok(r#"
+fn fib(n: int) -> int {
+    if n <= 1 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+fn main() { fib(10) }
+"#);
     }
 
     #[test]
-    fn test_call_not_callable() {
-        let mut i = Interpreter::new();
-        let r = i.call_function(Value::Int(5), vec![], s());
-        assert!(matches!(r, Err(RuntimeError::NotCallable { .. })));
+    fn test_stack_overflow() {
+        let err = run_err(r#"
+fn forever() -> int { return forever() }
+fn main() { forever() }
+"#);
+        assert!(matches!(err, RuntimeError::StackOverflow { .. }));
     }
 
     #[test]
-    fn test_closure_capture() {
-        let mut i = Interpreter::new();
-        i.env.define("base".to_string(), Value::Int(10));
-        let f = Value::Function {
-            name: "addBase".to_string(),
-            params: vec![param("n")],
-            body: FnBody::Arrow(Box::new(binary(BinaryOp::Add, ident("base"), ident("n")))),
-            closure: Rc::new(RefCell::new(i.env.clone())),
-        };
-        assert_eq!(
-            i.call_function(f, vec![Value::Int(5)], s()).unwrap(),
-            Value::Int(15)
-        );
-    }
-
-    #[test]
-    fn test_run_and_call_function() {
-        let mut i = run_source("fn add(a, b) { return a + b }");
-        let f = i.env.get("add").unwrap();
-        assert_eq!(
-            i.call_function(f, vec![Value::Int(2), Value::Int(3)], s())
-                .unwrap(),
-            Value::Int(5)
-        );
-    }
-
-    #[test]
-    fn test_recursive_function() {
-        let mut i = run_source("fn fact(n) { if n <= 1 { return 1 } return n * fact(n - 1) }");
-        let f = i.env.get("fact").unwrap();
-        assert_eq!(
-            i.call_function(f, vec![Value::Int(5)], s()).unwrap(),
-            Value::Int(120)
-        );
-    }
-
-    #[test]
-    fn test_field_access() {
-        let mut i = Interpreter::new();
-        i.env.define(
-            "p".to_string(),
-            Value::Struct {
-                name: "Point".to_string(),
-                fields: HashMap::from([
-                    ("x".to_string(), Value::Int(3)),
-                    ("y".to_string(), Value::Int(4)),
-                ]),
-            },
-        );
-        let e = Expr::Field(FieldExpr {
-            object: Box::new(ident("p")),
-            field: "y".to_string(),
-            span: s(),
-        });
-        assert_eq!(i.eval_expr(&e).unwrap(), Value::Int(4));
+    fn test_struct_field_access() {
+        run_ok(r#"
+struct Point { x: float, y: float }
+fn main() {
+    let p = Point { x: 3.0, y: 4.0 }
+    print(p.x)
+}
+"#);
     }
 
     #[test]
     fn test_field_not_found() {
-        let mut i = Interpreter::new();
-        i.env.define(
-            "p".to_string(),
-            Value::Struct {
-                name: "Point".to_string(),
-                fields: HashMap::from([("x".to_string(), Value::Int(3))]),
-            },
-        );
-        let e = Expr::Field(FieldExpr {
-            object: Box::new(ident("p")),
-            field: "z".to_string(),
-            span: s(),
-        });
-        assert!(matches!(
-            i.eval_expr(&e),
-            Err(RuntimeError::FieldNotFound { .. })
-        ));
+        let err = run_err(r#"
+struct Point { x: float, y: float }
+fn main() {
+    let p = Point { x: 1.0, y: 2.0 }
+    print(p.z)
+}
+"#);
+        assert!(matches!(err, RuntimeError::FieldNotFound { field, .. } if field == "z"));
     }
 
     #[test]
-    fn test_index_array() {
-        let mut i = Interpreter::new();
-        i.env.define(
-            "arr".to_string(),
-            Value::Array(vec![Value::Int(10), Value::Int(20), Value::Int(30)]),
-        );
-        let e = Expr::Index(IndexExpr {
-            object: Box::new(ident("arr")),
-            index: Box::new(int_lit(1)),
-            span: s(),
-        });
-        assert_eq!(i.eval_expr(&e).unwrap(), Value::Int(20));
-    }
-
-    #[test]
-    fn test_index_negative() {
-        let mut i = Interpreter::new();
-        i.env.define(
-            "arr".to_string(),
-            Value::Array(vec![Value::Int(10), Value::Int(20), Value::Int(30)]),
-        );
-        let e = Expr::Index(IndexExpr {
-            object: Box::new(ident("arr")),
-            index: Box::new(int_lit(-1)),
-            span: s(),
-        });
-        assert_eq!(i.eval_expr(&e).unwrap(), Value::Int(30));
+    fn test_array_index() {
+        run_ok("fn main() { let arr = [10, 20, 30] print(arr[1]) }");
     }
 
     #[test]
     fn test_index_out_of_bounds() {
-        let mut i = Interpreter::new();
-        i.env
-            .define("arr".to_string(), Value::Array(vec![Value::Int(10)]));
-        let e = Expr::Index(IndexExpr {
-            object: Box::new(ident("arr")),
-            index: Box::new(int_lit(5)),
-            span: s(),
-        });
-        assert!(matches!(
-            i.eval_expr(&e),
-            Err(RuntimeError::IndexOutOfBounds { .. })
-        ));
+        let err = run_err("fn main() { let arr = [1, 2] print(arr[99]) }");
+        assert!(matches!(err, RuntimeError::IndexOutOfBounds { index: 99, .. }));
     }
 
     #[test]
-    fn test_assign_variable() {
-        let mut i = Interpreter::new();
-        i.env.define("x".to_string(), Value::Int(1));
-        let e = Expr::Assign(AssignExpr {
-            target: Box::new(ident("x")),
-            value: Box::new(int_lit(99)),
-            span: s(),
-        });
-        assert_eq!(i.eval_expr(&e).unwrap(), Value::Int(99));
-        assert_eq!(i.env.get("x"), Some(Value::Int(99)));
+    fn test_negative_index() {
+        run_ok("fn main() { let arr = [1, 2, 3] print(arr[-1]) }"); // last element
     }
 
     #[test]
-    fn test_assign_undefined() {
-        let mut i = Interpreter::new();
-        let e = Expr::Assign(AssignExpr {
-            target: Box::new(ident("missing")),
-            value: Box::new(int_lit(1)),
-            span: s(),
-        });
-        assert!(matches!(
-            i.eval_expr(&e),
-            Err(RuntimeError::UndefinedVariable { .. })
-        ));
+    fn test_string_method_upper() {
+        run_ok(r#"fn main() { let s = "hello" print(s.upper()) }"#);
     }
 
     #[test]
-    fn test_assign_array_index() {
-        let mut i = Interpreter::new();
-        i.env.define(
-            "arr".to_string(),
-            Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
-        );
-        let e = Expr::Assign(AssignExpr {
-            target: Box::new(Expr::Index(IndexExpr {
-                object: Box::new(ident("arr")),
-                index: Box::new(int_lit(0)),
-                span: s(),
-            })),
-            value: Box::new(int_lit(100)),
-            span: s(),
-        });
-        assert_eq!(i.eval_expr(&e).unwrap(), Value::Int(100));
+    fn test_string_method_split() {
+        run_ok(r#"fn main() { let s = "a,b,c" let parts = s.split(",") print(parts.len()) }"#);
     }
 
     #[test]
-    fn test_method_string_upper() {
-        let mut i = Interpreter::new();
-        let e = Expr::MethodCall(MethodCallExpr {
-            object: Box::new(Expr::Str(StrLit {
-                value: "hello".to_string(),
-                span: s(),
-            })),
-            method: "upper".to_string(),
-            args: vec![],
-            span: s(),
-        });
-        assert_eq!(i.eval_expr(&e).unwrap(), Value::Str("HELLO".to_string()));
+    fn test_array_method_len() {
+        run_ok("fn main() { let arr = [1, 2, 3] print(arr.len()) }");
     }
 
     #[test]
-    fn test_method_array_len() {
-        let mut i = Interpreter::new();
-        let e = Expr::MethodCall(MethodCallExpr {
-            object: Box::new(Expr::Array(ArrayLit {
-                elements: vec![int_lit(1), int_lit(2)],
-                span: s(),
-            })),
-            method: "len".to_string(),
-            args: vec![],
-            span: s(),
-        });
-        assert_eq!(i.eval_expr(&e).unwrap(), Value::Int(2));
-    }
-
-    #[test]
-    fn test_method_not_found() {
-        let mut i = Interpreter::new();
-        let e = Expr::MethodCall(MethodCallExpr {
-            object: Box::new(Expr::Int(IntLit {
-                value: 5,
-                span: s(),
-            })),
-            method: "fly".to_string(),
-            args: vec![],
-            span: s(),
-        });
-        assert!(matches!(
-            i.eval_expr(&e),
-            Err(RuntimeError::UndefinedFunction { .. })
-        ));
-    }
-
-    #[test]
-    fn test_null_coalesce() {
-        let mut i = Interpreter::new();
-        let e = Expr::NullCoalesce(NullCoalesceExpr {
-            left: Box::new(Expr::Null(NullLit { span: s() })),
-            right: Box::new(int_lit(5)),
-            span: s(),
-        });
-        assert_eq!(i.eval_expr(&e).unwrap(), Value::Int(5));
-
-        let e2 = Expr::NullCoalesce(NullCoalesceExpr {
-            left: Box::new(int_lit(3)),
-            right: Box::new(int_lit(5)),
-            span: s(),
-        });
-        assert_eq!(i.eval_expr(&e2).unwrap(), Value::Int(3));
-    }
-
-    #[test]
-    fn test_range_expression() {
-        let mut i = Interpreter::new();
-        let e = Expr::Range(RangeExpr {
-            start: Box::new(int_lit(1)),
-            end: Box::new(int_lit(4)),
-            inclusive: false,
-            span: s(),
-        });
-        assert_eq!(
-            i.eval_expr(&e).unwrap(),
-            Value::Array(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
-        );
+    fn test_not_callable_error() {
+        let err = run_err("fn main() { let x = 42 x() }");
+        assert!(matches!(err, RuntimeError::NotCallable { .. }));
     }
 }

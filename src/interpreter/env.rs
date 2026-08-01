@@ -41,7 +41,7 @@ pub struct Environment {
     call_depth: usize, // track recursion depth
 }
 
-const MAX_CALL_DEPTH: usize = 1000; // prevent stack overflow
+const MAX_CALL_DEPTH: usize = 50; // prevent stack overflow
 
 impl Environment {
     pub fn new() -> Self {
@@ -122,6 +122,11 @@ impl Environment {
     /// Current call stack depth
     pub fn call_depth(&self) -> usize {
         self.call_depth
+    }
+
+    /// Set the call stack depth (used when swapping environments for a call)
+    pub fn set_call_depth(&mut self, depth: usize) {
+        self.call_depth = depth;
     }
 
     /// Number of active scopes
