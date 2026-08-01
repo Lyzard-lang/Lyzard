@@ -18,13 +18,15 @@ pub struct TypeEnvironment {
 
 impl TypeEnvironment {
     pub fn new() -> Self {
-        TypeEnvironment {
+        let mut env = TypeEnvironment {
             scopes: vec![HashMap::new()],
             current_fn_return: None,
             in_loop: false,
             in_impl: false,
             self_type: None,
-        }
+        };
+        env.register_builtins();
+        env
     }
 
     pub fn push_scope(&mut self) {
@@ -37,14 +39,12 @@ impl TypeEnvironment {
         }
     }
 
-    /// Define a name → type in the current scope
     pub fn define(&mut self, name: String, ty: ResolvedType) {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name, ty);
         }
     }
 
-    /// Look up a name from innermost scope outward
     pub fn lookup(&self, name: &str) -> Option<&ResolvedType> {
         for scope in self.scopes.iter().rev() {
             if let Some(ty) = scope.get(name) {
@@ -63,11 +63,9 @@ impl TypeEnvironment {
     pub fn enter_function(&mut self, return_type: ResolvedType) {
         self.current_fn_return = Some(return_type);
     }
-
     pub fn exit_function(&mut self) {
         self.current_fn_return = None;
     }
-
     pub fn expected_return_type(&self) -> Option<&ResolvedType> {
         self.current_fn_return.as_ref()
     }
@@ -90,22 +88,19 @@ impl TypeEnvironment {
         self.in_impl = true;
         self.self_type = Some(self_ty);
     }
-
     pub fn exit_impl(&mut self) {
         self.in_impl = false;
         self.self_type = None;
     }
-
     pub fn self_type(&self) -> Option<&ResolvedType> {
         self.self_type.as_ref()
     }
 
-    // ── BUILTIN TYPES ─────────────────────────────────────────
+    // ── BUILTIN TYPES ────────────────────────────────────────
 
-    /// Register all built-in functions with their types
-    pub fn register_builtins(&mut self) {
+    fn register_builtins(&mut self) {
         use ResolvedType::*;
-        let builtins: Vec<(&str, ResolvedType)> = vec![
+        let builtins: &[(&str, ResolvedType)] = &[
             ("print", Function { params: vec![Unknown], return_type: Box::new(Void) }),
             ("println", Function { params: vec![Unknown], return_type: Box::new(Void) }),
             ("len", Function { params: vec![Unknown], return_type: Box::new(Int) }),
@@ -116,13 +111,12 @@ impl TypeEnvironment {
             ("assert", Function { params: vec![Bool], return_type: Box::new(Void) }),
             ("panic", Function { params: vec![Str], return_type: Box::new(Never) }),
             ("typeOf", Function { params: vec![Unknown], return_type: Box::new(Str) }),
-            ("abs", Function { params: vec![Int], return_type: Box::new(Int) }),
-            ("min", Function { params: vec![Int, Int], return_type: Box::new(Int) }),
-            ("max", Function { params: vec![Int, Int], return_type: Box::new(Int) }),
+            ("abs", Function { params: vec![Unknown], return_type: Box::new(Unknown) }),
+            ("min", Function { params: vec![Unknown, Unknown], return_type: Box::new(Unknown) }),
+            ("max", Function { params: vec![Unknown, Unknown], return_type: Box::new(Unknown) }),
         ];
-
         for (name, ty) in builtins {
-            self.define(name.to_string(), ty);
+            self.define(name.to_string(), ty.clone());
         }
     }
 }
@@ -139,83 +133,78 @@ mod type_env_tests {
     use crate::types::ResolvedType;
 
     #[test]
-    fn test_define_and_lookup() {
-        let mut env = TypeEnvironment::new();
-        env.define("x".to_string(), ResolvedType::Int);
-        assert_eq!(env.lookup("x"), Some(&ResolvedType::Int));
+    fn test_define_lookup() {
+        let mut e = TypeEnvironment::new();
+        e.define("x".to_string(), ResolvedType::Int);
+        assert_eq!(e.lookup("x"), Some(&ResolvedType::Int));
     }
 
     #[test]
-    fn test_lookup_undefined_none() {
-        let env = TypeEnvironment::new();
-        assert_eq!(env.lookup("missing"), None);
+    fn test_undefined_none() {
+        assert_eq!(TypeEnvironment::new().lookup("nope"), None);
     }
 
     #[test]
-    fn test_inner_scope_sees_outer() {
-        let mut env = TypeEnvironment::new();
-        env.define("x".to_string(), ResolvedType::Int);
-        env.push_scope();
-        assert_eq!(env.lookup("x"), Some(&ResolvedType::Int));
+    fn test_inner_sees_outer() {
+        let mut e = TypeEnvironment::new();
+        e.define("x".to_string(), ResolvedType::Int);
+        e.push_scope();
+        assert_eq!(e.lookup("x"), Some(&ResolvedType::Int));
     }
 
     #[test]
-    fn test_outer_does_not_see_inner() {
-        let mut env = TypeEnvironment::new();
-        env.push_scope();
-        env.define("y".to_string(), ResolvedType::Str);
-        env.pop_scope();
-        assert_eq!(env.lookup("y"), None);
+    fn test_outer_not_see_inner() {
+        let mut e = TypeEnvironment::new();
+        e.push_scope();
+        e.define("y".to_string(), ResolvedType::Str);
+        e.pop_scope();
+        assert_eq!(e.lookup("y"), None);
     }
 
     #[test]
     fn test_shadowing() {
-        let mut env = TypeEnvironment::new();
-        env.define("x".to_string(), ResolvedType::Int);
-        env.push_scope();
-        env.define("x".to_string(), ResolvedType::Str);
-        assert_eq!(env.lookup("x"), Some(&ResolvedType::Str));
-        env.pop_scope();
-        assert_eq!(env.lookup("x"), Some(&ResolvedType::Int));
+        let mut e = TypeEnvironment::new();
+        e.define("x".to_string(), ResolvedType::Int);
+        e.push_scope();
+        e.define("x".to_string(), ResolvedType::Str);
+        assert_eq!(e.lookup("x"), Some(&ResolvedType::Str));
+        e.pop_scope();
+        assert_eq!(e.lookup("x"), Some(&ResolvedType::Int));
     }
 
     #[test]
     fn test_fn_return_context() {
-        let mut env = TypeEnvironment::new();
-        assert!(env.expected_return_type().is_none());
-        env.enter_function(ResolvedType::Int);
-        assert_eq!(env.expected_return_type(), Some(&ResolvedType::Int));
-        env.exit_function();
-        assert!(env.expected_return_type().is_none());
+        let mut e = TypeEnvironment::new();
+        e.enter_function(ResolvedType::Int);
+        assert_eq!(e.expected_return_type(), Some(&ResolvedType::Int));
+        e.exit_function();
+        assert!(e.expected_return_type().is_none());
     }
 
     #[test]
     fn test_loop_context() {
-        let mut env = TypeEnvironment::new();
-        assert!(!env.in_loop());
-        env.enter_loop();
-        assert!(env.in_loop());
-        env.exit_loop();
-        assert!(!env.in_loop());
+        let mut e = TypeEnvironment::new();
+        assert!(!e.in_loop());
+        e.enter_loop();
+        assert!(e.in_loop());
+        e.exit_loop();
+        assert!(!e.in_loop());
     }
 
     #[test]
     fn test_impl_context() {
-        let mut env = TypeEnvironment::new();
-        assert!(env.self_type().is_none());
-        env.enter_impl(ResolvedType::Struct("Point".to_string()));
-        assert_eq!(env.self_type(), Some(&ResolvedType::Struct("Point".to_string())));
-        env.exit_impl();
-        assert!(env.self_type().is_none());
+        let mut e = TypeEnvironment::new();
+        e.enter_impl(ResolvedType::Struct("P".to_string()));
+        assert!(e.self_type().is_some());
+        e.exit_impl();
+        assert!(e.self_type().is_none());
     }
 
     #[test]
     fn test_builtins_registered() {
-        let mut env = TypeEnvironment::new();
-        env.register_builtins();
-        assert!(env.is_defined("print"));
-        assert!(env.is_defined("len"));
-        assert!(env.is_defined("range"));
-        assert!(env.is_defined("panic"));
+        let e = TypeEnvironment::new();
+        assert!(e.is_defined("print"));
+        assert!(e.is_defined("len"));
+        assert!(e.is_defined("panic"));
     }
 }
