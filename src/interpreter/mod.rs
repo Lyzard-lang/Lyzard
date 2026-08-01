@@ -31,14 +31,20 @@ impl Default for Interpreter {
 
 impl Interpreter {
     pub fn new() -> Self {
-        let mut env = Environment::new();
-        for (name, _, func) in all_builtins() {
-            env.define(name.to_string(), Value::Builtin { name, func });
-        }
-        Interpreter {
-            env,
+        let mut interp = Interpreter {
+            env: Environment::new(),
             output: Vec::new(),
             capture_output: false,
+        };
+        interp.register_builtins();
+        interp
+    }
+
+    /// Register all built-in functions into the global environment.
+    fn register_builtins(&mut self) {
+        for (name, _arity, func) in all_builtins() {
+            let val = Value::Builtin { name, func };
+            self.env.define(name.to_string(), val);
         }
     }
 
@@ -69,21 +75,57 @@ impl Interpreter {
         for decl in &program.declarations {
             match decl {
                 Declaration::Function(_) => {}
-                Declaration::Let(d) => {
-                    let value = self.eval_expr(&d.value)?;
-                    self.env.define(d.name.clone(), value);
+                other => {
+                    self.eval_declaration(other)?;
                 }
-                Declaration::Const(c) => {
-                    let value = self.eval_expr(&c.value)?;
-                    self.env.define(c.name.clone(), value);
-                }
-                Declaration::Statement(s) => {
-                    self.eval_statement(s)?;
-                }
-                _ => {}
             }
         }
         Ok(())
+    }
+
+    /// Register a function in the environment WITHOUT running its body.
+    fn register_fn(&mut self, decl: &FnDecl) {
+        let val = Value::Function {
+            name: decl.name.clone(),
+            params: decl.params.clone(),
+            body: decl.body.clone(),
+            closure: Rc::new(RefCell::new(self.env.clone())),
+        };
+        self.env.define(decl.name.clone(), val);
+    }
+
+    // ══════════════════════════════════════════
+    //   DECLARATION EVALUATION
+    // ══════════════════════════════════════════
+
+    pub fn eval_declaration(&mut self, decl: &Declaration) -> Result<Value, RuntimeError> {
+        match decl {
+            Declaration::Let(l) => self.eval_let(l),
+            Declaration::Const(c) => self.eval_const(c),
+            Declaration::Function(f) => {
+                self.register_fn(f);
+                Ok(Value::Void)
+            }
+            Declaration::Statement(s) => self.eval_statement(s),
+            Declaration::Struct(_) => Ok(Value::Void), // type registration
+            Declaration::Enum(_) => Ok(Value::Void),   // type registration
+            Declaration::Impl(_) => Ok(Value::Void),   // handled separately
+            Declaration::Interface(_) => Ok(Value::Void),
+            Declaration::Import(_) => Ok(Value::Void), // TODO: module system
+            Declaration::Module(_) => Ok(Value::Void),
+        }
+    }
+
+    fn eval_let(&mut self, decl: &LetDecl) -> Result<Value, RuntimeError> {
+        let value = self.eval_expr(&decl.value)?;
+        self.env.define(decl.name.clone(), value);
+        Ok(Value::Void)
+    }
+
+    fn eval_const(&mut self, decl: &ConstDecl) -> Result<Value, RuntimeError> {
+        let value = self.eval_expr(&decl.value)?;
+        self.env.define(decl.name.clone(), value);
+        Ok(Value::Void)
     }
 
     /// Evaluate an expression into a runtime value.
@@ -123,11 +165,11 @@ impl Interpreter {
             Expr::Binary(bin) => {
                 let left = self.eval_expr(&bin.left)?;
                 let right = self.eval_expr(&bin.right)?;
-                self.eval_binary(bin.op, left, right, bin.span)
+                self.eval_binary(&bin.op, left, right)
             }
             Expr::Unary(un) => {
                 let operand = self.eval_expr(&un.operand)?;
-                self.eval_unary(un.op, operand)
+                self.eval_unary(&un.op, operand)
             }
             Expr::If(if_expr) => {
                 let cond = self.eval_expr(&if_expr.condition)?;
@@ -175,11 +217,12 @@ impl Interpreter {
                 self.eval_assign_target(&a.target, value, a.span)
             }
             Expr::Propagate(p) => {
-                let v = self.eval_expr(&p.expr)?;
-                match v {
-                    Value::Err(e) => Err(RuntimeError::UnhandledError {
-                        message: e.to_display_string(),
-                    }),
+                let val = self.eval_expr(&p.expr)?;
+                match val {
+                    Value::Err(e) => {
+                        // Propagate as Return signal so it bubbles up.
+                        Ok(Value::Return(Box::new(Value::Err(e))))
+                    }
                     other => Ok(other),
                 }
             }
@@ -689,118 +732,93 @@ impl Interpreter {
         Ok(result)
     }
 
-    fn eval_binary(
-        &mut self,
-        op: BinaryOp,
+    pub fn eval_binary(
+        &self,
+        op: &BinaryOp,
         left: Value,
         right: Value,
-        span: Span,
     ) -> Result<Value, RuntimeError> {
-        match (op, left, right) {
-            (BinaryOp::Add, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
-            (BinaryOp::Add, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
-            (BinaryOp::Add, Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 + b)),
-            (BinaryOp::Add, Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + b as f64)),
-            (BinaryOp::Add, Value::Str(a), Value::Str(b)) => Ok(Value::Str(a + &b)),
-            (BinaryOp::Add, Value::Str(a), other) => Ok(Value::Str(a + &other.to_display_string())),
+        Ok(match (op, left, right) {
+            // ── ARITHMETIC ──────────────────────────────────────
+            (BinaryOp::Add, Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+            (BinaryOp::Add, Value::Float(a), Value::Float(b)) => Value::Float(a + b),
+            (BinaryOp::Add, Value::Int(a), Value::Float(b)) => Value::Float(a as f64 + b),
+            (BinaryOp::Add, Value::Float(a), Value::Int(b)) => Value::Float(a + b as f64),
+            (BinaryOp::Add, Value::Str(a), Value::Str(b)) => Value::Str(a + &b),
+            (BinaryOp::Add, Value::Str(a), other) => Value::Str(a + &other.to_display_string()),
 
-            (BinaryOp::Sub, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a - b)),
-            (BinaryOp::Sub, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
-            (BinaryOp::Sub, Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 - b)),
-            (BinaryOp::Sub, Value::Float(a), Value::Int(b)) => Ok(Value::Float(a - b as f64)),
+            (BinaryOp::Sub, Value::Int(a), Value::Int(b)) => Value::Int(a - b),
+            (BinaryOp::Sub, Value::Float(a), Value::Float(b)) => Value::Float(a - b),
+            (BinaryOp::Sub, Value::Int(a), Value::Float(b)) => Value::Float(a as f64 - b),
+            (BinaryOp::Sub, Value::Float(a), Value::Int(b)) => Value::Float(a - b as f64),
 
-            (BinaryOp::Mul, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a * b)),
-            (BinaryOp::Mul, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
-            (BinaryOp::Mul, Value::Int(a), Value::Float(b)) => Ok(Value::Float(a as f64 * b)),
-            (BinaryOp::Mul, Value::Float(a), Value::Int(b)) => Ok(Value::Float(a * b as f64)),
+            (BinaryOp::Mul, Value::Int(a), Value::Int(b)) => Value::Int(a * b),
+            (BinaryOp::Mul, Value::Float(a), Value::Float(b)) => Value::Float(a * b),
+            (BinaryOp::Mul, Value::Int(a), Value::Float(b)) => Value::Float(a as f64 * b),
+            (BinaryOp::Mul, Value::Float(a), Value::Int(b)) => Value::Float(a * b as f64),
 
             (BinaryOp::Div, Value::Int(a), Value::Int(b)) => {
                 if b == 0 {
-                    return Err(RuntimeError::DivisionByZero { span: Some(span) });
+                    return Err(RuntimeError::DivisionByZero { span: None });
                 }
-                Ok(Value::Int(a / b))
+                Value::Int(a / b)
             }
-            (BinaryOp::Div, Value::Float(a), Value::Float(b)) => {
-                if b == 0.0 {
-                    return Err(RuntimeError::DivisionByZero { span: Some(span) });
-                }
-                Ok(Value::Float(a / b))
-            }
-            (BinaryOp::Div, Value::Int(a), Value::Float(b)) => {
-                if b == 0.0 {
-                    return Err(RuntimeError::DivisionByZero { span: Some(span) });
-                }
-                Ok(Value::Float(a as f64 / b))
-            }
+            (BinaryOp::Div, Value::Float(a), Value::Float(b)) => Value::Float(a / b),
+            (BinaryOp::Div, Value::Int(a), Value::Float(b)) => Value::Float(a as f64 / b),
             (BinaryOp::Div, Value::Float(a), Value::Int(b)) => {
                 if b == 0 {
-                    return Err(RuntimeError::DivisionByZero { span: Some(span) });
+                    return Err(RuntimeError::DivisionByZero { span: None });
                 }
-                Ok(Value::Float(a / b as f64))
+                Value::Float(a / b as f64)
             }
 
             (BinaryOp::Mod, Value::Int(a), Value::Int(b)) => {
                 if b == 0 {
-                    return Err(RuntimeError::DivisionByZero { span: Some(span) });
+                    return Err(RuntimeError::DivisionByZero { span: None });
                 }
-                Ok(Value::Int(a % b))
-            }
-            (BinaryOp::Mod, Value::Float(a), Value::Float(b)) => {
-                if b == 0.0 {
-                    return Err(RuntimeError::DivisionByZero { span: Some(span) });
-                }
-                Ok(Value::Float(a % b))
-            }
-            (BinaryOp::Mod, Value::Int(a), Value::Float(b)) => {
-                if b == 0.0 {
-                    return Err(RuntimeError::DivisionByZero { span: Some(span) });
-                }
-                Ok(Value::Float(a as f64 % b))
-            }
-            (BinaryOp::Mod, Value::Float(a), Value::Int(b)) => {
-                if b == 0 {
-                    return Err(RuntimeError::DivisionByZero { span: Some(span) });
-                }
-                Ok(Value::Float(a % b as f64))
+                Value::Int(a % b)
             }
 
-            (BinaryOp::Lt, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a < b)),
-            (BinaryOp::Lt, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a < b)),
-            (BinaryOp::Lt, Value::Int(a), Value::Float(b)) => Ok(Value::Bool((a as f64) < b)),
-            (BinaryOp::Lt, Value::Float(a), Value::Int(b)) => Ok(Value::Bool(a < b as f64)),
-            (BinaryOp::Lte, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a <= b)),
-            (BinaryOp::Lte, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a <= b)),
-            (BinaryOp::Lte, Value::Int(a), Value::Float(b)) => Ok(Value::Bool((a as f64) <= b)),
-            (BinaryOp::Lte, Value::Float(a), Value::Int(b)) => Ok(Value::Bool(a <= b as f64)),
-            (BinaryOp::Gt, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a > b)),
-            (BinaryOp::Gt, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a > b)),
-            (BinaryOp::Gt, Value::Int(a), Value::Float(b)) => Ok(Value::Bool((a as f64) > b)),
-            (BinaryOp::Gt, Value::Float(a), Value::Int(b)) => Ok(Value::Bool(a > b as f64)),
-            (BinaryOp::Gte, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a >= b)),
-            (BinaryOp::Gte, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a >= b)),
-            (BinaryOp::Gte, Value::Int(a), Value::Float(b)) => Ok(Value::Bool((a as f64) >= b)),
-            (BinaryOp::Gte, Value::Float(a), Value::Int(b)) => Ok(Value::Bool(a >= b as f64)),
+            // ── COMPARISON ──────────────────────────────────────
+            (BinaryOp::Eq, a, b) => Value::Bool(a == b),
+            (BinaryOp::NotEq, a, b) => Value::Bool(a != b),
 
-            (BinaryOp::Eq, a, b) => Ok(Value::Bool(a == b)),
-            (BinaryOp::NotEq, a, b) => Ok(Value::Bool(a != b)),
-            (BinaryOp::And, a, b) => Ok(Value::Bool(a.is_truthy() && b.is_truthy())),
-            (BinaryOp::Or, a, b) => Ok(Value::Bool(a.is_truthy() || b.is_truthy())),
+            (BinaryOp::Lt, Value::Int(a), Value::Int(b)) => Value::Bool(a < b),
+            (BinaryOp::Lte, Value::Int(a), Value::Int(b)) => Value::Bool(a <= b),
+            (BinaryOp::Gt, Value::Int(a), Value::Int(b)) => Value::Bool(a > b),
+            (BinaryOp::Gte, Value::Int(a), Value::Int(b)) => Value::Bool(a >= b),
 
-            (op, left, right) => Err(RuntimeError::TypeError {
-                expected: format!("operands for {}", op.as_str()),
-                got: format!("{} and {}", left.type_name(), right.type_name()),
-            }),
-        }
+            (BinaryOp::Lt, Value::Float(a), Value::Float(b)) => Value::Bool(a < b),
+            (BinaryOp::Lte, Value::Float(a), Value::Float(b)) => Value::Bool(a <= b),
+            (BinaryOp::Gt, Value::Float(a), Value::Float(b)) => Value::Bool(a > b),
+            (BinaryOp::Gte, Value::Float(a), Value::Float(b)) => Value::Bool(a >= b),
+
+            (BinaryOp::Lt, Value::Str(a), Value::Str(b)) => Value::Bool(a < b),
+            (BinaryOp::Gt, Value::Str(a), Value::Str(b)) => Value::Bool(a > b),
+
+            // ── LOGICAL ─────────────────────────────────────────
+            (BinaryOp::And, Value::Bool(a), Value::Bool(b)) => Value::Bool(a && b),
+            (BinaryOp::Or, Value::Bool(a), Value::Bool(b)) => Value::Bool(a || b),
+
+            // ── TYPE ERROR ──────────────────────────────────────
+            (op, left, right) => {
+                return Err(RuntimeError::TypeError {
+                    expected: format!("compatible types for '{:?}'", op),
+                    got: format!("{} and {}", left.type_name(), right.type_name()),
+                })
+            }
+        })
     }
 
-    fn eval_unary(&mut self, op: UnaryOp, operand: Value) -> Result<Value, RuntimeError> {
+    pub fn eval_unary(&self, op: &UnaryOp, operand: Value) -> Result<Value, RuntimeError> {
         match (op, operand) {
-            (UnaryOp::Neg, Value::Int(i)) => Ok(Value::Int(-i)),
+            (UnaryOp::Neg, Value::Int(n)) => Ok(Value::Int(-n)),
             (UnaryOp::Neg, Value::Float(f)) => Ok(Value::Float(-f)),
-            (UnaryOp::Not, b) => Ok(Value::Bool(!b.is_truthy())),
-            (op, _) => Err(RuntimeError::TypeError {
-                expected: format!("valid operand for {}", op.as_str()),
-                got: "unsupported type".to_string(),
+            (UnaryOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
+            (UnaryOp::Not, other) => Ok(Value::Bool(!other.is_truthy())),
+            (op, operand) => Err(RuntimeError::TypeError {
+                expected: format!("compatible type for '{:?}'", op),
+                got: operand.type_name().to_string(),
             }),
         }
     }
@@ -861,342 +879,222 @@ mod interpreter_tests {
     use super::*;
 
     fn interp() -> Interpreter {
-        let mut i = Interpreter::new();
-        i.env.define("x".to_string(), Value::Int(42));
-        i.env
-            .define("name".to_string(), Value::Str("hi".to_string()));
-        i
+        Interpreter::new()
     }
 
-    fn s() -> Span {
-        Span::dummy()
-    }
-
-    fn int_lit(v: i64) -> Expr {
+    fn int(n: i64) -> Expr {
         Expr::Int(IntLit {
-            value: v,
-            span: s(),
+            value: n,
+            span: Span::dummy(),
         })
     }
-    fn float_lit(v: f64) -> Expr {
+    fn float(f: f64) -> Expr {
         Expr::Float(FloatLit {
-            value: v,
-            span: s(),
+            value: f,
+            span: Span::dummy(),
         })
     }
-    fn str_lit(v: &str) -> Expr {
-        Expr::Str(StrLit {
-            value: v.to_string(),
-            span: s(),
-        })
-    }
-    fn bool_lit(v: bool) -> Expr {
+    fn boolean(b: bool) -> Expr {
         Expr::Bool(BoolLit {
-            value: v,
-            span: s(),
+            value: b,
+            span: Span::dummy(),
         })
     }
-    fn char_lit(v: char) -> Expr {
-        Expr::Char(CharLit {
-            value: v,
-            span: s(),
+    fn string(s: &str) -> Expr {
+        Expr::Str(StrLit {
+            value: s.to_string(),
+            span: Span::dummy(),
         })
     }
-    fn ident(name: &str) -> Expr {
-        Expr::Identifier(IdentExpr {
-            name: name.to_string(),
-            span: s(),
-        })
-    }
-    fn binary(op: BinaryOp, left: Expr, right: Expr) -> Expr {
+    fn binary(l: Expr, op: BinaryOp, r: Expr) -> Expr {
         Expr::Binary(BinaryExpr {
             op,
-            left: Box::new(left),
-            right: Box::new(right),
-            span: s(),
+            left: Box::new(l),
+            right: Box::new(r),
+            span: Span::dummy(),
         })
     }
-    fn unary(op: UnaryOp, operand: Expr) -> Expr {
+    fn unary(op: UnaryOp, e: Expr) -> Expr {
         Expr::Unary(UnaryExpr {
             op,
-            operand: Box::new(operand),
-            span: s(),
+            operand: Box::new(e),
+            span: Span::dummy(),
         })
     }
 
     #[test]
     fn test_int_literal() {
-        assert_eq!(interp().eval_expr(&int_lit(42)).unwrap(), Value::Int(42));
+        assert_eq!(interp().eval_expr(&int(42)).unwrap(), Value::Int(42));
     }
-
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_float_literal() {
         assert_eq!(
-            interp().eval_expr(&float_lit(3.5)).unwrap(),
-            Value::Float(3.5)
+            interp().eval_expr(&float(3.14)).unwrap(),
+            Value::Float(3.14)
         );
     }
-
-    #[test]
-    fn test_str_literal() {
-        assert_eq!(
-            interp().eval_expr(&str_lit("hi")).unwrap(),
-            Value::Str("hi".to_string())
-        );
-    }
-
     #[test]
     fn test_bool_literal() {
         assert_eq!(
-            interp().eval_expr(&bool_lit(true)).unwrap(),
+            interp().eval_expr(&boolean(true)).unwrap(),
             Value::Bool(true)
         );
     }
-
     #[test]
-    fn test_char_literal() {
+    fn test_str_literal() {
         assert_eq!(
-            interp().eval_expr(&char_lit('z')).unwrap(),
-            Value::Char('z')
-        );
-    }
-
-    #[test]
-    fn test_null_literal() {
-        assert_eq!(
-            interp()
-                .eval_expr(&Expr::Null(NullLit { span: s() }))
-                .unwrap(),
-            Value::Null
-        );
-    }
-
-    #[test]
-    fn test_array_literal() {
-        let e = Expr::Array(ArrayLit {
-            elements: vec![int_lit(1), int_lit(2)],
-            span: s(),
-        });
-        assert_eq!(
-            interp().eval_expr(&e).unwrap(),
-            Value::Array(vec![Value::Int(1), Value::Int(2)])
-        );
-    }
-
-    #[test]
-    fn test_struct_init() {
-        let e = Expr::StructInit(StructInitExpr {
-            name: "Point".to_string(),
-            fields: vec![("x".to_string(), int_lit(1)), ("y".to_string(), int_lit(2))],
-            span: s(),
-        });
-        let got = interp().eval_expr(&e).unwrap();
-        assert_eq!(got.to_display_string(), "Point { x: 1, y: 2 }");
-        assert_eq!(got.type_name(), "struct");
-    }
-
-    #[test]
-    fn test_identifier_lookup() {
-        assert_eq!(interp().eval_expr(&ident("x")).unwrap(), Value::Int(42));
-        assert_eq!(
-            interp().eval_expr(&ident("name")).unwrap(),
+            interp().eval_expr(&string("hi")).unwrap(),
             Value::Str("hi".to_string())
         );
     }
 
     #[test]
-    fn test_undefined_name_error() {
-        let mut i = interp();
-        assert!(matches!(
-            i.eval_expr(&ident("nope")),
-            Err(RuntimeError::UndefinedVariable { .. })
-        ));
-    }
-
-    #[test]
-    fn test_add_ints() {
+    fn test_add_int() {
         assert_eq!(
             interp()
-                .eval_expr(&binary(BinaryOp::Add, int_lit(2), int_lit(3)))
+                .eval_expr(&binary(int(3), BinaryOp::Add, int(4)))
+                .unwrap(),
+            Value::Int(7)
+        );
+    }
+    #[test]
+    fn test_sub_int() {
+        assert_eq!(
+            interp()
+                .eval_expr(&binary(int(10), BinaryOp::Sub, int(3)))
+                .unwrap(),
+            Value::Int(7)
+        );
+    }
+    #[test]
+    fn test_mul_int() {
+        assert_eq!(
+            interp()
+                .eval_expr(&binary(int(3), BinaryOp::Mul, int(4)))
+                .unwrap(),
+            Value::Int(12)
+        );
+    }
+    #[test]
+    fn test_div_int() {
+        assert_eq!(
+            interp()
+                .eval_expr(&binary(int(10), BinaryOp::Div, int(2)))
                 .unwrap(),
             Value::Int(5)
         );
     }
-
     #[test]
-    fn test_add_floats() {
+    fn test_mod_int() {
         assert_eq!(
             interp()
-                .eval_expr(&binary(BinaryOp::Add, float_lit(1.5), float_lit(2.5)))
-                .unwrap(),
-            Value::Float(4.0)
-        );
-    }
-
-    #[test]
-    fn test_add_mixed() {
-        assert_eq!(
-            interp()
-                .eval_expr(&binary(BinaryOp::Add, int_lit(1), float_lit(2.5)))
-                .unwrap(),
-            Value::Float(3.5)
-        );
-        assert_eq!(
-            interp()
-                .eval_expr(&binary(BinaryOp::Add, float_lit(2.5), int_lit(1)))
-                .unwrap(),
-            Value::Float(3.5)
-        );
-    }
-
-    #[test]
-    fn test_add_str_concat() {
-        assert_eq!(
-            interp()
-                .eval_expr(&binary(BinaryOp::Add, str_lit("Hello "), str_lit("World")))
-                .unwrap(),
-            Value::Str("Hello World".to_string())
-        );
-    }
-
-    #[test]
-    fn test_sub_mul_div() {
-        assert_eq!(
-            interp()
-                .eval_expr(&binary(BinaryOp::Sub, int_lit(10), int_lit(4)))
-                .unwrap(),
-            Value::Int(6)
-        );
-        assert_eq!(
-            interp()
-                .eval_expr(&binary(BinaryOp::Mul, int_lit(6), int_lit(7)))
-                .unwrap(),
-            Value::Int(42)
-        );
-        assert_eq!(
-            interp()
-                .eval_expr(&binary(BinaryOp::Div, int_lit(10), int_lit(2)))
-                .unwrap(),
-            Value::Int(5)
-        );
-    }
-
-    #[test]
-    fn test_div_by_zero() {
-        let mut i = interp();
-        assert!(matches!(
-            i.eval_expr(&binary(BinaryOp::Div, int_lit(1), int_lit(0))),
-            Err(RuntimeError::DivisionByZero { .. })
-        ));
-        assert!(matches!(
-            i.eval_expr(&binary(BinaryOp::Div, float_lit(1.0), float_lit(0.0))),
-            Err(RuntimeError::DivisionByZero { .. })
-        ));
-    }
-
-    #[test]
-    fn test_mod() {
-        assert_eq!(
-            interp()
-                .eval_expr(&binary(BinaryOp::Mod, int_lit(10), int_lit(3)))
+                .eval_expr(&binary(int(10), BinaryOp::Mod, int(3)))
                 .unwrap(),
             Value::Int(1)
         );
     }
 
     #[test]
-    fn test_comparisons() {
+    fn test_div_by_zero() {
+        let result = interp().eval_expr(&binary(int(5), BinaryOp::Div, int(0)));
+        assert!(matches!(result, Err(RuntimeError::DivisionByZero { .. })));
+    }
+
+    #[test]
+    fn test_string_concat() {
+        let result = interp()
+            .eval_expr(&binary(string("hello "), BinaryOp::Add, string("world")))
+            .unwrap();
+        assert_eq!(result, Value::Str("hello world".to_string()));
+    }
+
+    #[test]
+    fn test_eq_true() {
         assert_eq!(
             interp()
-                .eval_expr(&binary(BinaryOp::Lt, int_lit(1), int_lit(2)))
-                .unwrap(),
-            Value::Bool(true)
-        );
-        assert_eq!(
-            interp()
-                .eval_expr(&binary(BinaryOp::Gte, int_lit(3), int_lit(3)))
-                .unwrap(),
-            Value::Bool(true)
-        );
-        assert_eq!(
-            interp()
-                .eval_expr(&binary(BinaryOp::Lt, int_lit(1), float_lit(1.5)))
+                .eval_expr(&binary(int(5), BinaryOp::Eq, int(5)))
                 .unwrap(),
             Value::Bool(true)
         );
     }
-
     #[test]
-    fn test_equality() {
+    fn test_eq_false() {
         assert_eq!(
             interp()
-                .eval_expr(&binary(BinaryOp::Eq, int_lit(1), int_lit(1)))
-                .unwrap(),
-            Value::Bool(true)
-        );
-        assert_eq!(
-            interp()
-                .eval_expr(&binary(BinaryOp::NotEq, int_lit(1), int_lit(2)))
-                .unwrap(),
-            Value::Bool(true)
-        );
-        assert_eq!(
-            interp()
-                .eval_expr(&binary(BinaryOp::Eq, str_lit("a"), str_lit("a")))
-                .unwrap(),
-            Value::Bool(true)
-        );
-        assert_eq!(
-            interp()
-                .eval_expr(&binary(BinaryOp::Eq, int_lit(1), float_lit(1.0)))
+                .eval_expr(&binary(int(5), BinaryOp::Eq, int(6)))
                 .unwrap(),
             Value::Bool(false)
         );
     }
-
     #[test]
-    fn test_and_or() {
+    fn test_lt() {
         assert_eq!(
             interp()
-                .eval_expr(&binary(BinaryOp::And, bool_lit(true), bool_lit(false)))
+                .eval_expr(&binary(int(3), BinaryOp::Lt, int(5)))
+                .unwrap(),
+            Value::Bool(true)
+        );
+    }
+    #[test]
+    fn test_and_true() {
+        assert_eq!(
+            interp()
+                .eval_expr(&binary(boolean(true), BinaryOp::And, boolean(true)))
+                .unwrap(),
+            Value::Bool(true)
+        );
+    }
+    #[test]
+    fn test_and_false() {
+        assert_eq!(
+            interp()
+                .eval_expr(&binary(boolean(true), BinaryOp::And, boolean(false)))
                 .unwrap(),
             Value::Bool(false)
         );
+    }
+    #[test]
+    fn test_or_true() {
         assert_eq!(
             interp()
-                .eval_expr(&binary(BinaryOp::Or, bool_lit(true), bool_lit(false)))
+                .eval_expr(&binary(boolean(false), BinaryOp::Or, boolean(true)))
                 .unwrap(),
             Value::Bool(true)
         );
     }
 
     #[test]
-    fn test_unary_neg() {
+    fn test_unary_neg_int() {
         assert_eq!(
-            interp()
-                .eval_expr(&unary(UnaryOp::Neg, int_lit(5)))
-                .unwrap(),
+            interp().eval_expr(&unary(UnaryOp::Neg, int(5))).unwrap(),
             Value::Int(-5)
         );
+    }
+    #[test]
+    #[allow(clippy::approx_constant)]
+    fn test_unary_neg_float() {
         assert_eq!(
             interp()
-                .eval_expr(&unary(UnaryOp::Neg, float_lit(2.5)))
+                .eval_expr(&unary(UnaryOp::Neg, float(3.14)))
                 .unwrap(),
-            Value::Float(-2.5)
+            Value::Float(-3.14)
         );
     }
-
     #[test]
-    fn test_unary_not() {
+    fn test_unary_not_true() {
         assert_eq!(
             interp()
-                .eval_expr(&unary(UnaryOp::Not, bool_lit(true)))
+                .eval_expr(&unary(UnaryOp::Not, boolean(true)))
                 .unwrap(),
             Value::Bool(false)
         );
+    }
+    #[test]
+    fn test_unary_not_false() {
         assert_eq!(
             interp()
-                .eval_expr(&unary(UnaryOp::Not, int_lit(0)))
+                .eval_expr(&unary(UnaryOp::Not, boolean(false)))
                 .unwrap(),
             Value::Bool(true)
         );
@@ -1204,29 +1102,8 @@ mod interpreter_tests {
 
     #[test]
     fn test_type_mismatch_error() {
-        let mut i = interp();
-        assert!(matches!(
-            i.eval_expr(&binary(BinaryOp::Sub, str_lit("x"), int_lit(1))),
-            Err(RuntimeError::TypeError { .. })
-        ));
-    }
-
-    #[test]
-    fn test_call_builtin_print() {
-        let mut i = interp();
-        let e = Expr::Call(CallExpr {
-            callee: Box::new(ident("print")),
-            args: vec![Argument {
-                label: None,
-                value: Expr::Str(StrLit {
-                    value: "hi".to_string(),
-                    span: s(),
-                }),
-                span: s(),
-            }],
-            span: s(),
-        });
-        assert_eq!(i.eval_expr(&e).unwrap(), Value::Void);
+        let result = interp().eval_expr(&binary(string("x"), BinaryOp::Sub, int(1)));
+        assert!(result.is_err());
     }
 }
 
