@@ -146,10 +146,569 @@ impl TypeChecker {
     }
 
     // ══════════════════════════════════════════
-    //   PASS 2: DECLARATION BODIES (later phase)
+    //   PASS 2: DECLARATION BODIES
     // ══════════════════════════════════════════
 
-    fn check_declaration(&mut self, _decl: &Declaration) {}
+    fn check_declaration(&mut self, decl: &Declaration) {
+        match decl {
+            Declaration::Function(f) => {
+                self.env.push_scope();
+                let ret = f
+                    .return_type
+                    .as_ref()
+                    .map(|t| self.resolve_type(t))
+                    .unwrap_or(ResolvedType::Void);
+                self.env.enter_function(ret);
+                for p in &f.params {
+                    let ty = p
+                        .param_type
+                        .as_ref()
+                        .map(|t| self.resolve_type(t))
+                        .unwrap_or(ResolvedType::Unknown);
+                    self.env.define(p.name.clone(), ty);
+                }
+                match &f.body {
+                    FnBody::Block(b) => self.check_block(b),
+                    FnBody::Arrow(e) => {
+                        self.infer_expr(e);
+                    }
+                }
+                self.env.exit_function();
+                self.env.pop_scope();
+            }
+            Declaration::Let(d) => self.check_let(d),
+            Declaration::Const(d) => self.check_const(d),
+            Declaration::Statement(s) => self.check_statement(s),
+            _ => {}
+        }
+    }
+
+    fn check_let(&mut self, d: &LetDecl) {
+        let val_ty = self.infer_expr(&d.value);
+        if let Some(ann) = &d.type_annotation {
+            let ann_ty = self.resolve_type(ann);
+            if !val_ty.is_error() && !ann_ty.is_assignable_from(&val_ty) {
+                self.type_mismatch(ann_ty, val_ty.clone(), d.span, "variable declaration");
+            }
+        }
+        self.env.define(d.name.clone(), val_ty);
+    }
+
+    fn check_const(&mut self, d: &ConstDecl) {
+        let val_ty = self.infer_expr(&d.value);
+        if let Some(ann) = &d.type_annotation {
+            let ann_ty = self.resolve_type(ann);
+            if !val_ty.is_error() && !ann_ty.is_assignable_from(&val_ty) {
+                self.type_mismatch(ann_ty, val_ty.clone(), d.span, "const declaration");
+            }
+        }
+        self.env.define(d.name.clone(), val_ty);
+    }
+
+    fn check_block(&mut self, block: &Block) {
+        self.env.push_scope();
+        for stmt in &block.statements {
+            if self.errors.len() >= MAX_ERRORS {
+                break;
+            }
+            self.check_statement(stmt);
+        }
+        self.env.pop_scope();
+    }
+
+    fn check_statement(&mut self, stmt: &Statement) {
+        match stmt {
+            Statement::Let(d) => self.check_let(d),
+            Statement::Const(d) => self.check_const(d),
+            Statement::Return(s) => {
+                if let Some(v) = &s.value {
+                    let ty = self.infer_expr(v);
+                    if let Some(expected) = self.env.expected_return_type() {
+                        if !ty.is_error() && !expected.is_assignable_from(&ty) {
+                            self.type_mismatch(expected.clone(), ty, s.span, "return");
+                        }
+                    }
+                }
+            }
+            Statement::If(s) => {
+                let cond_ty = self.infer_expr(&s.condition);
+                if !cond_ty.is_error() && !cond_ty.is_bool() {
+                    self.push_error(TypeError::NonBoolCondition {
+                        found: cond_ty,
+                        span: s.condition.span(),
+                        file: self.file.clone(),
+                        context: "if".to_string(),
+                    });
+                }
+                self.check_block(&s.then_branch);
+                for eif in &s.else_if_branches {
+                    let c = self.infer_expr(&eif.condition);
+                    if !c.is_error() && !c.is_bool() {
+                        self.push_error(TypeError::NonBoolCondition {
+                            found: c,
+                            span: eif.condition.span(),
+                            file: self.file.clone(),
+                            context: "if".to_string(),
+                        });
+                    }
+                    self.check_block(&eif.body);
+                }
+                if let Some(eb) = &s.else_branch {
+                    self.check_block(eb);
+                }
+            }
+            Statement::While(s) => {
+                let c = self.infer_expr(&s.condition);
+                if !c.is_error() && !c.is_bool() {
+                    self.push_error(TypeError::NonBoolCondition {
+                        found: c,
+                        span: s.condition.span(),
+                        file: self.file.clone(),
+                        context: "while".to_string(),
+                    });
+                }
+                self.check_block(&s.body);
+            }
+            Statement::For(s) => {
+                let it = self.infer_expr(&s.iterable);
+                self.env.push_scope();
+                match it {
+                    ResolvedType::Array(inner) => self.env.define(s.variable.clone(), *inner),
+                    _ => self.env.define(s.variable.clone(), ResolvedType::Unknown),
+                }
+                self.check_block(&s.body);
+                self.env.pop_scope();
+            }
+            Statement::Block(b) => self.check_block(b),
+            Statement::Expression(e) => {
+                self.infer_expr(&e.expr);
+            }
+            _ => {}
+        }
+    }
+
+    // ══════════════════════════════════════════
+    //   EXPRESSION TYPE INFERENCE
+    // ══════════════════════════════════════════
+
+    pub fn infer_expr(&mut self, expr: &Expr) -> ResolvedType {
+        match expr {
+            // Literals — always known
+            Expr::Int(_) => ResolvedType::Int,
+            Expr::Float(_) => ResolvedType::Float,
+            Expr::Str(_) => ResolvedType::Str,
+            Expr::Bool(_) => ResolvedType::Bool,
+            Expr::Char(_) => ResolvedType::Char,
+            Expr::Null(_) => ResolvedType::Optional(Box::new(ResolvedType::Unknown)),
+
+            // Identifier — look up its type in env
+            Expr::Identifier(id) => match self.lookup_type(&id.name) {
+                Some(ty) => ty,
+                None => ResolvedType::Error,
+            },
+
+            // Binary operations
+            Expr::Binary(b) => {
+                let left = self.infer_expr(&b.left);
+                let right = self.infer_expr(&b.right);
+                self.infer_binary(&b.op, left, right, b.span)
+            }
+
+            // Unary operations
+            Expr::Unary(u) => {
+                let operand = self.infer_expr(&u.operand);
+                self.infer_unary(&u.op, operand, u.span)
+            }
+
+            // Function call
+            Expr::Call(c) => {
+                let callee_type = self.infer_expr(&c.callee);
+                let arg_types: Vec<ResolvedType> = c.args.iter().map(|a| self.infer_expr(&a.value)).collect();
+                self.infer_call(callee_type, arg_types, &c.callee, c.span)
+            }
+
+            // Method call — return Unknown for now (full resolution needs impl registry)
+            Expr::MethodCall(m) => {
+                self.infer_expr(&m.object);
+                for a in &m.args {
+                    self.infer_expr(&a.value);
+                }
+                ResolvedType::Unknown
+            }
+
+            // Array literal: [1, 2, 3] → [int]
+            Expr::Array(arr) => {
+                if arr.elements.is_empty() {
+                    return ResolvedType::Array(Box::new(ResolvedType::Unknown));
+                }
+                let first_ty = self.infer_expr(&arr.elements[0]);
+                for elem in arr.elements.iter().skip(1) {
+                    let ty = self.infer_expr(elem);
+                    if !first_ty.is_assignable_from(&ty) && !ty.is_error() {
+                        self.push_error(TypeError::TypeMismatch {
+                            expected: first_ty.clone(),
+                            found: ty,
+                            span: elem.span(),
+                            file: self.file.clone(),
+                            context: "array literal — all elements must have the same type".to_string(),
+                        });
+                    }
+                }
+                ResolvedType::Array(Box::new(first_ty))
+            }
+
+            // Struct literal: Point { x: 1.0, y: 2.0 } → Struct("Point")
+            Expr::StructInit(s) => {
+                let struct_ty = ResolvedType::Struct(s.name.clone());
+                if let Some(fields) = self.struct_fields.get(&s.name).cloned() {
+                    for (field_name, field_val) in &s.fields {
+                        let val_ty = self.infer_expr(field_val);
+                        if let Some((_, expected_ty)) = fields.iter().find(|(n, _)| n == field_name) {
+                            if !expected_ty.is_assignable_from(&val_ty) && !val_ty.is_error() {
+                                self.push_error(TypeError::TypeMismatch {
+                                    expected: expected_ty.clone(),
+                                    found: val_ty,
+                                    span: field_val.span(),
+                                    file: self.file.clone(),
+                                    context: format!("field `{}` of struct `{}`", field_name, s.name),
+                                });
+                            }
+                        } else {
+                            let available = fields.iter().map(|(n, _)| n.clone()).collect();
+                            self.push_error(TypeError::UnknownStructField {
+                                struct_name: s.name.clone(),
+                                field: field_name.clone(),
+                                available,
+                                span: field_val.span(),
+                                file: self.file.clone(),
+                            });
+                        }
+                    }
+                }
+                struct_ty
+            }
+
+            // Field access: obj.field → type of field
+            Expr::Field(f) => {
+                let obj_ty = self.infer_expr(&f.object);
+                self.infer_field_access(obj_ty, &f.field, f.span)
+            }
+
+            // Index: arr[i] → inner type of array
+            Expr::Index(i) => {
+                let obj_ty = self.infer_expr(&i.object);
+                let idx_ty = self.infer_expr(&i.index);
+
+                // Index must be int
+                if !idx_ty.is_error() && !matches!(idx_ty, ResolvedType::Int) {
+                    self.push_error(TypeError::NonIntegerIndex {
+                        found: idx_ty,
+                        span: i.index.span(),
+                        file: self.file.clone(),
+                    });
+                }
+
+                // Object must be array or str
+                match &obj_ty {
+                    ResolvedType::Array(inner) => *inner.clone(),
+                    ResolvedType::Str => ResolvedType::Char,
+                    other if other.is_error() => ResolvedType::Error,
+                    other => {
+                        self.push_error(TypeError::IndexOnNonArray {
+                            found: other.clone(),
+                            span: i.span,
+                            file: self.file.clone(),
+                        });
+                        ResolvedType::Error
+                    }
+                }
+            }
+
+            // Assignment: evaluates to the value's type
+            Expr::Assign(a) => {
+                let val_ty = self.infer_expr(&a.value);
+                let target_ty = self.infer_expr(&a.target);
+                if !target_ty.is_error() && !val_ty.is_error() && !target_ty.is_assignable_from(&val_ty) {
+                    self.type_mismatch(target_ty, val_ty.clone(), a.span, "assignment");
+                }
+                val_ty
+            }
+
+            // Block: type is the last expression or Void
+            Expr::Block(b) => {
+                self.env.push_scope();
+                let mut ty = ResolvedType::Void;
+                for stmt in &b.statements {
+                    ty = self.check_statement_type(stmt);
+                }
+                self.env.pop_scope();
+                ty
+            }
+
+            // If expression: branches must match
+            Expr::If(i) => {
+                let cond_ty = self.infer_expr(&i.condition);
+                if !cond_ty.is_error() && !cond_ty.is_bool() {
+                    self.push_error(TypeError::NonBoolCondition {
+                        found: cond_ty,
+                        span: i.condition.span(),
+                        file: self.file.clone(),
+                        context: "if".to_string(),
+                    });
+                }
+                let then_ty = self.infer_block_type(&i.then_branch);
+                if let Some(else_block) = &i.else_branch {
+                    let else_ty = self.infer_block_type(else_block);
+                    if !then_ty.is_error() && !else_ty.is_error() && then_ty != else_ty {
+                        self.push_error(TypeError::BranchTypeMismatch {
+                            then_type: then_ty.clone(),
+                            else_type: else_ty,
+                            span: i.span,
+                            file: self.file.clone(),
+                        });
+                    }
+                }
+                then_ty
+            }
+
+            // Range: always produces [int]
+            Expr::Range(r) => {
+                let start = self.infer_expr(&r.start);
+                let end = self.infer_expr(&r.end);
+                for ty in [&start, &end] {
+                    if !ty.is_error() && !ty.is_int() {
+                        self.push_error(TypeError::TypeMismatch {
+                            expected: ResolvedType::Int,
+                            found: ty.clone(),
+                            span: r.span,
+                            file: self.file.clone(),
+                            context: "range bounds must be int".to_string(),
+                        });
+                    }
+                }
+                ResolvedType::Array(Box::new(ResolvedType::Int))
+            }
+
+            // Error propagation: ? requires Result<T, E>, returns T
+            Expr::Propagate(p) => {
+                let inner = self.infer_expr(&p.expr);
+                if inner.is_error() {
+                    return ResolvedType::Error;
+                }
+                match inner.as_result() {
+                    Some((ok_ty, _)) => ok_ty.clone(),
+                    None => {
+                        self.push_error(TypeError::PropagateOnNonResult {
+                            found: inner,
+                            span: p.span,
+                            file: self.file.clone(),
+                        });
+                        ResolvedType::Error
+                    }
+                }
+            }
+
+            // Null coalesce: a ?? b — result is inner type of Optional
+            Expr::NullCoalesce(n) => {
+                let left = self.infer_expr(&n.left);
+                let right = self.infer_expr(&n.right);
+                match left.unwrap_optional() {
+                    Some(inner) => inner.clone(),
+                    None => right,
+                }
+            }
+
+            _ => ResolvedType::Unknown,
+        }
+    }
+
+    fn infer_binary(&mut self, op: &BinaryOp, left: ResolvedType, right: ResolvedType, span: Span) -> ResolvedType {
+        if left.is_error() || right.is_error() {
+            return ResolvedType::Error;
+        }
+
+        match op {
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
+                match ResolvedType::arithmetic_result(&left, &right) {
+                    Some(result) => result,
+                    None => {
+                        self.push_error(TypeError::InvalidOperation {
+                            op: format!("{:?}", op).to_lowercase(),
+                            left,
+                            right,
+                            span,
+                            file: self.file.clone(),
+                        });
+                        ResolvedType::Error
+                    }
+                }
+            }
+            BinaryOp::Eq | BinaryOp::NotEq => {
+                if left != right && !left.is_error() && !right.is_error() {
+                    self.push_error(TypeError::TypeMismatch {
+                        expected: left,
+                        found: right,
+                        span,
+                        file: self.file.clone(),
+                        context: "equality comparison — both sides must have the same type".to_string(),
+                    });
+                }
+                ResolvedType::Bool
+            }
+            BinaryOp::Lt | BinaryOp::Lte | BinaryOp::Gt | BinaryOp::Gte => {
+                if !left.is_numeric() && !left.is_str() {
+                    self.push_error(TypeError::InvalidOperation {
+                        op: format!("{:?}", op).to_lowercase(),
+                        left,
+                        right,
+                        span,
+                        file: self.file.clone(),
+                    });
+                }
+                ResolvedType::Bool
+            }
+            BinaryOp::And | BinaryOp::Or => {
+                for ty in [&left, &right] {
+                    if !ty.is_bool() && !ty.is_error() {
+                        self.push_error(TypeError::TypeMismatch {
+                            expected: ResolvedType::Bool,
+                            found: ty.clone(),
+                            span,
+                            file: self.file.clone(),
+                            context: format!("logical `{:?}` requires bool operands", op),
+                        });
+                    }
+                }
+                ResolvedType::Bool
+            }
+        }
+    }
+
+    fn infer_unary(&mut self, op: &UnaryOp, operand: ResolvedType, span: Span) -> ResolvedType {
+        if operand.is_error() {
+            return ResolvedType::Error;
+        }
+        match op {
+            UnaryOp::Neg => {
+                if operand.is_numeric() {
+                    operand
+                } else {
+                    self.push_error(TypeError::UnaryTypeMismatch {
+                        op: "-".to_string(),
+                        found: operand,
+                        span,
+                        file: self.file.clone(),
+                    });
+                    ResolvedType::Error
+                }
+            }
+            UnaryOp::Not => {
+                if operand.is_bool() {
+                    ResolvedType::Bool
+                } else {
+                    self.push_error(TypeError::UnaryTypeMismatch {
+                        op: "!".to_string(),
+                        found: operand,
+                        span,
+                        file: self.file.clone(),
+                    });
+                    ResolvedType::Error
+                }
+            }
+        }
+    }
+
+    fn infer_call(&mut self, callee_type: ResolvedType, arg_types: Vec<ResolvedType>, callee: &Expr, span: Span) -> ResolvedType {
+        if callee_type.is_error() {
+            return ResolvedType::Error;
+        }
+
+        let callee_name = match callee {
+            Expr::Identifier(id) => id.name.clone(),
+            _ => "<expr>".to_string(),
+        };
+
+        match callee_type {
+            ResolvedType::Function { params, return_type } => {
+                // Skip type check for params with Unknown (builtins that accept any type)
+                for (i, (expected, got)) in params.iter().zip(arg_types.iter()).enumerate() {
+                    if matches!(expected, ResolvedType::Unknown) {
+                        continue;
+                    }
+                    if !expected.is_assignable_from(got) && !got.is_error() {
+                        self.push_error(TypeError::ArgumentTypeMismatch {
+                            fn_name: callee_name.clone(),
+                            param_index: i,
+                            expected: expected.clone(),
+                            found: got.clone(),
+                            span,
+                            file: self.file.clone(),
+                        });
+                    }
+                }
+                *return_type
+            }
+            other => {
+                self.push_error(TypeError::NotAFunction {
+                    name: callee_name,
+                    actual_type: other,
+                    span,
+                    file: self.file.clone(),
+                });
+                ResolvedType::Error
+            }
+        }
+    }
+
+    fn infer_field_access(&mut self, obj_ty: ResolvedType, field: &str, span: Span) -> ResolvedType {
+        if obj_ty.is_error() {
+            return ResolvedType::Error;
+        }
+
+        match &obj_ty {
+            ResolvedType::Struct(name) => {
+                let name = name.clone();
+                if let Some(fields) = self.struct_fields.get(&name).cloned() {
+                    if let Some((_, ty)) = fields.iter().find(|(n, _)| n == field) {
+                        return ty.clone();
+                    }
+                    let available = fields.iter().map(|(n, _)| n.clone()).collect();
+                    self.push_error(TypeError::UnknownStructField {
+                        struct_name: name,
+                        field: field.to_string(),
+                        available,
+                        span,
+                        file: self.file.clone(),
+                    });
+                }
+                ResolvedType::Error
+            }
+            other => {
+                self.push_error(TypeError::FieldOnNonStruct {
+                    found: other.clone(),
+                    field: field.to_string(),
+                    span,
+                    file: self.file.clone(),
+                });
+                ResolvedType::Error
+            }
+        }
+    }
+
+    fn infer_block_type(&mut self, block: &Block) -> ResolvedType {
+        self.env.push_scope();
+        let mut ty = ResolvedType::Void;
+        for stmt in &block.statements {
+            ty = self.check_statement_type(stmt);
+        }
+        self.env.pop_scope();
+        ty
+    }
+
+    fn check_statement_type(&mut self, stmt: &Statement) -> ResolvedType {
+        self.check_statement(stmt);
+        ResolvedType::Void
+    }
 
     // ══════════════════════════════════════════
     //   ERROR HELPERS
@@ -159,7 +718,6 @@ impl TypeChecker {
         self.errors.push(err);
     }
 
-    #[allow(dead_code)]
     fn type_mismatch(&mut self, expected: ResolvedType, found: ResolvedType, span: Span, context: &str) {
         self.push_error(TypeError::TypeMismatch {
             expected,
@@ -170,7 +728,6 @@ impl TypeChecker {
         });
     }
 
-    #[allow(dead_code)]
     fn lookup_type(&self, name: &str) -> Option<ResolvedType> {
         self.env.lookup(name).cloned()
     }
@@ -251,5 +808,116 @@ mod checker_init_tests {
             c.resolve_type(&arr),
             ResolvedType::Array(Box::new(ResolvedType::Int))
         );
+    }
+}
+
+#[cfg(test)]
+mod infer_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn check(src: &str) -> TypeErrors {
+        let t = Lexer::tokenize(src, "t.lyz").unwrap();
+        let (prog, _) = Parser::new(t, "t.lyz", src).parse().unwrap();
+        TypeChecker::new(src, "t.lyz").check(&prog)
+    }
+
+    #[test]
+    fn test_let_int_no_err() {
+        assert!(check("let x = 42").is_empty());
+    }
+    #[test]
+    fn test_let_typed_match() {
+        assert!(check("let x: int = 42").is_empty());
+    }
+    #[test]
+    fn test_let_typed_mismatch() {
+        let errs = check("let x: int = \"hello\"");
+        assert!(!errs.is_empty());
+        assert!(matches!(
+            &errs.0[0],
+            TypeError::TypeMismatch {
+                expected: ResolvedType::Int,
+                found: ResolvedType::Str,
+                ..
+            }
+        ));
+    }
+    #[test]
+    fn test_add_int_ok() {
+        assert!(check("fn f() { let r = 1 + 2 }").is_empty());
+    }
+    #[test]
+    fn test_add_str_ok() {
+        assert!(check("fn f() { let r = \"a\" + \"b\" }").is_empty());
+    }
+    #[test]
+    fn test_add_int_bool_err() {
+        let errs = check("fn f() { let r = 1 + true }");
+        assert!(!errs.is_empty());
+        assert!(matches!(&errs.0[0], TypeError::InvalidOperation { .. }));
+    }
+    #[test]
+    fn test_if_non_bool_cond() {
+        let errs = check("fn f() { if 42 { } }");
+        assert!(!errs.is_empty());
+        assert!(matches!(
+            &errs.0[0],
+            TypeError::NonBoolCondition {
+                found: ResolvedType::Int,
+                ..
+            }
+        ));
+    }
+    #[test]
+    fn test_if_bool_cond_ok() {
+        assert!(check("fn f() { if true { } }").is_empty());
+    }
+    #[test]
+    fn test_index_non_array() {
+        let errs = check("fn f() { let x = 42 let r = x[0] }");
+        assert!(!errs.is_empty());
+        assert!(matches!(&errs.0[0], TypeError::IndexOnNonArray { .. }));
+    }
+    #[test]
+    fn test_index_array_ok() {
+        assert!(check("fn f() { let a = [1,2,3] let r = a[0] }").is_empty());
+    }
+    #[test]
+    fn test_call_arg_type_mismatch() {
+        let src = "fn add(a: int, b: int) -> int { return a + b }\nfn f() { add(1, \"x\") }";
+        let errs = check(src);
+        assert!(!errs.is_empty());
+        assert!(matches!(&errs.0[0], TypeError::ArgumentTypeMismatch { .. }));
+    }
+    #[test]
+    fn test_call_correct_args_ok() {
+        assert!(check("fn add(a: int, b: int) -> int { return a + b }\nfn f() { add(1, 2) }").is_empty());
+    }
+    #[test]
+    fn test_neg_numeric_ok() {
+        assert!(check("fn f() { let r = -5 }").is_empty());
+    }
+    #[test]
+    fn test_neg_bool_err() {
+        let errs = check("fn f() { let r = -true }");
+        assert!(!errs.is_empty());
+        assert!(matches!(&errs.0[0], TypeError::UnaryTypeMismatch { .. }));
+    }
+    #[test]
+    fn test_struct_field_ok() {
+        let src = "struct P { x: float } fn f() { let p = P { x: 1.0 } let r = p.x }";
+        assert!(check(src).is_empty());
+    }
+    #[test]
+    fn test_struct_wrong_field() {
+        let src = "struct P { x: float } fn f() { let p = P { x: 1.0 } let r = p.z }";
+        let errs = check(src);
+        assert!(!errs.is_empty());
+        assert!(matches!(
+            &errs.0[0],
+            TypeError::UnknownStructField { field, .. } if field == "z"
+        ));
     }
 }
