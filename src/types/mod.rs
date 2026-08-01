@@ -1,3 +1,5 @@
+pub mod env;
+
 /// The resolved type of a LYZARD value
 /// "Resolved" = fully known after type inference, no unknowns
 #[derive(Debug, Clone, PartialEq)]
