@@ -31,6 +31,11 @@ pub enum Value {
         name: String,
         fields: HashMap<String, Value>,
     },
+    Enum {
+        name: String,
+        variant: String,
+        payload: Option<Box<Value>>,
+    },
 
     // ── CALLABLE ─────────────────────────────────────────────
     Function {
@@ -87,6 +92,7 @@ impl Value {
             Value::Void => "void",
             Value::Array(_) => "array",
             Value::Struct { .. } => "struct",
+            Value::Enum { .. } => "enum",
             Value::Function { .. } => "function",
             Value::Builtin { .. } => "builtin function",
             Value::Return(_) => "return signal",
@@ -176,6 +182,14 @@ impl Value {
                 pairs.sort();
                 format!("{name} {{ {} }}", pairs.join(", "))
             }
+            Value::Enum {
+                name,
+                variant,
+                payload,
+            } => match payload {
+                Some(v) => format!("{name}.{variant}({v})"),
+                None => format!("{name}.{variant}"),
+            },
             Value::Function { name, .. } => format!("<fn {name}>"),
             Value::Builtin { name, .. } => format!("<builtin {name}>"),
             Value::Return(v) => format!("return({})", v.to_display_string()),
@@ -206,6 +220,18 @@ impl PartialEq for Value {
             (Value::Null, Value::Null) => true,
             (Value::Void, Value::Void) => true,
             (Value::Array(a), Value::Array(b)) => a == b,
+            (
+                Value::Enum {
+                    name: a,
+                    variant: b,
+                    payload: c,
+                },
+                Value::Enum {
+                    name: d,
+                    variant: e,
+                    payload: f,
+                },
+            ) => a == d && b == e && c == f,
             _ => false,
         }
     }

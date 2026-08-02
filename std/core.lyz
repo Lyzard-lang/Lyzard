@@ -1,0 +1,139 @@
+-- LYZARD Core Types
+-- Auto-imported into every program via the prelude (see prelude.lyz)
+
+-- ═══════════════════════════════════════════════════
+--   OPTION<T> — represents a value that might be absent
+-- ═══════════════════════════════════════════════════
+
+pub enum Option<T> {
+    Some(T)
+    None
+}
+
+impl<T> Option<T> {
+    pub fn isSome(self) -> bool {
+        match self {
+            Option.Some(_) -> true
+            Option.None    -> false
+        }
+    }
+
+    pub fn isNone(self) -> bool {
+        return !self.isSome()
+    }
+
+    pub fn unwrap(self) -> T {
+        match self {
+            Option.Some(v) -> return v
+            Option.None    -> panic("called unwrap() on a None value")
+        }
+    }
+
+    pub fn unwrapOr(self, default: T) -> T {
+        match self {
+            Option.Some(v) -> return v
+            Option.None    -> return default
+        }
+    }
+
+    pub fn map<U>(self, f: fn(T) -> U) -> Option<U> {
+        match self {
+            Option.Some(v) -> return Option.Some(f(v))
+            Option.None    -> return Option.None
+        }
+    }
+
+    pub fn andThen<U>(self, f: fn(T) -> Option<U>) -> Option<U> {
+        match self {
+            Option.Some(v) -> return f(v)
+            Option.None    -> return Option.None
+        }
+    }
+
+    pub fn toResult<E>(self, err: E) -> Result<T, E> {
+        match self {
+            Option.Some(v) -> return Result.Ok(v)
+            Option.None    -> return Result.Err(err)
+        }
+    }
+}
+
+-- ═══════════════════════════════════════════════════
+--   RESULT<T, E> — represents success or failure
+-- ═══════════════════════════════════════════════════
+
+pub enum Result<T, E> {
+    Ok(T)
+    Err(E)
+}
+
+impl<T, E> Result<T, E> {
+    pub fn isOk(self) -> bool {
+        match self {
+            Result.Ok(_)  -> true
+            Result.Err(_) -> false
+        }
+    }
+
+    pub fn isErr(self) -> bool {
+        return !self.isOk()
+    }
+
+    pub fn unwrap(self) -> T {
+        match self {
+            Result.Ok(v)  -> return v
+            Result.Err(e) -> panic("called unwrap() on an Err value")
+        }
+    }
+
+    pub fn unwrapOr(self, default: T) -> T {
+        match self {
+            Result.Ok(v)  -> return v
+            Result.Err(_) -> return default
+        }
+    }
+
+    pub fn unwrapErr(self) -> E {
+        match self {
+            Result.Ok(_)  -> panic("called unwrapErr() on an Ok value")
+            Result.Err(e) -> return e
+        }
+    }
+
+    pub fn map<U>(self, f: fn(T) -> U) -> Result<U, E> {
+        match self {
+            Result.Ok(v)  -> return Result.Ok(f(v))
+            Result.Err(e) -> return Result.Err(e)
+        }
+    }
+
+    pub fn mapErr<F>(self, f: fn(E) -> F) -> Result<T, F> {
+        match self {
+            Result.Ok(v)  -> return Result.Ok(v)
+            Result.Err(e) -> return Result.Err(f(e))
+        }
+    }
+
+    pub fn toOption(self) -> Option<T> {
+        match self {
+            Result.Ok(v)  -> return Option.Some(v)
+            Result.Err(_) -> return Option.None
+        }
+    }
+}
+
+-- ═══════════════════════════════════════════════════
+--   COMPARABLE / EQUATABLE interfaces (used by collections)
+-- ═══════════════════════════════════════════════════
+
+pub interface Equatable {
+    fn equals(self, other: Self) -> bool
+}
+
+pub interface Comparable {
+    fn compareTo(self, other: Self) -> int  -- negative, zero, or positive
+}
+
+pub interface Printable {
+    fn toString(self) -> str
+}

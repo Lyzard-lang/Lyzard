@@ -15,12 +15,20 @@ use self::env::Environment;
 use self::error::RuntimeError;
 use self::value::Value;
 
+/// A step along a nested assignment path (`a.b[i].c = v`).
+enum PathStep {
+    Field(String),
+    Index(usize),
+}
+
 /// Tree-walking interpreter: walks the validated AST and produces values.
 #[derive(Debug)]
 pub struct Interpreter {
     pub env: Environment,
     pub output: Vec<String>,
     pub capture_output: bool,
+    /// Registered enum type names → their variant names (for `Option.Some(...)`).
+    pub enums: HashMap<String, Vec<String>>,
 }
 
 impl Default for Interpreter {
@@ -35,6 +43,7 @@ impl Interpreter {
             env: Environment::new(),
             output: Vec::new(),
             capture_output: false,
+            enums: HashMap::new(),
         };
         interp.register_builtins();
         interp
@@ -56,16 +65,41 @@ impl Interpreter {
         // self-recursive and mutually-recursive calls can resolve themselves.
         let shared = Rc::new(RefCell::new(self.env.clone()));
         for decl in &program.declarations {
-            if let Declaration::Function(f) = decl {
-                shared.borrow_mut().define(
-                    f.name.clone(),
-                    Value::Function {
-                        name: f.name.clone(),
-                        params: f.params.clone(),
-                        body: f.body.clone(),
-                        closure: Rc::clone(&shared),
-                    },
-                );
+            match decl {
+                Declaration::Function(f) => {
+                    shared.borrow_mut().define(
+                        f.name.clone(),
+                        Value::Function {
+                            name: f.name.clone(),
+                            params: f.params.clone(),
+                            body: f.body.clone(),
+                            closure: Rc::clone(&shared),
+                        },
+                    );
+                }
+                Declaration::Enum(e) => {
+                    self.enums.insert(
+                        e.name.clone(),
+                        e.variants.iter().map(|v| v.name.clone()).collect(),
+                    );
+                }
+                Declaration::Impl(imp) => {
+                    // Impl methods are registered as `<type>_<method>` so that
+                    // method calls can dispatch to them.
+                    for method in &imp.methods {
+                        let fn_name = format!("{}_{}", imp.target, method.name);
+                        shared.borrow_mut().define(
+                            fn_name.clone(),
+                            Value::Function {
+                                name: fn_name,
+                                params: method.params.clone(),
+                                body: method.body.clone(),
+                                closure: Rc::clone(&shared),
+                            },
+                        );
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -188,6 +222,40 @@ impl Interpreter {
                 self.call_function(callee, args, c.span)
             }
             Expr::MethodCall(mc) => {
+                // `Option.Some(42)` — enum constructor call on a type name.
+                if let Expr::Identifier(id) = &*mc.object {
+                    if let Some(variants) = self.enums.get(&id.name) {
+                        if variants.iter().any(|v| v == &mc.method) {
+                            if mc.args.len() > 1 {
+                                return Err(RuntimeError::TypeError {
+                                    expected: "enum variant with at most one payload"
+                                        .to_string(),
+                                    got: format!("{} arguments", mc.args.len()),
+                                });
+                            }
+                            let payload = match mc.args.first() {
+                                Some(arg) => Some(Box::new(self.eval_expr(&arg.value)?)),
+                                None => None,
+                            };
+                            return Ok(Value::Enum {
+                                name: id.name.clone(),
+                                variant: mc.method.clone(),
+                                payload,
+                            });
+                        }
+                    }
+                    // `List.new()` — static constructor on a type name.
+                    if !self.env.is_defined(&id.name) {
+                        let static_name = format!("{}_{}", id.name, mc.method);
+                        if let Some(fn_val) = self.env.get(&static_name) {
+                            let mut args = Vec::new();
+                            for arg in &mc.args {
+                                args.push(self.eval_expr(&arg.value)?);
+                            }
+                            return self.call_function(fn_val, args, mc.span);
+                        }
+                    }
+                }
                 let obj = self.eval_expr(&mc.object)?;
                 let mut args = Vec::new();
                 for arg in &mc.args {
@@ -196,6 +264,18 @@ impl Interpreter {
                 self.eval_method_call(obj, &mc.method, args, mc.span)
             }
             Expr::Field(f) => {
+                // `Option.None` — enum variant with no payload used as a value.
+                if let Expr::Identifier(id) = &*f.object {
+                    if let Some(variants) = self.enums.get(&id.name) {
+                        if variants.iter().any(|v| v == &f.field) {
+                            return Ok(Value::Enum {
+                                name: id.name.clone(),
+                                variant: f.field.clone(),
+                                payload: None,
+                            });
+                        }
+                    }
+                }
                 let obj = self.eval_expr(&f.object)?;
                 self.eval_field_access(obj, &f.field, f.span)
             }
@@ -214,6 +294,11 @@ impl Interpreter {
                     Value::Err(e) => {
                         // Propagate as Return signal so it bubbles up.
                         Ok(Value::Return(Box::new(Value::Err(e))))
+                    }
+                    Value::Enum { name, variant, payload }
+                        if name == "Result" && variant == "Err" =>
+                    {
+                        Ok(Value::Return(Box::new(Value::Enum { name, variant, payload })))
                     }
                     other => Ok(other),
                 }
@@ -263,14 +348,28 @@ impl Interpreter {
                 body,
                 closure,
             } => {
+                // Methods (`impl` blocks) declare an explicit `self` param.
+                // The receiver arrives as the first argument and is bound to
+                // the name `self` inside the call.
+                let mut rest: Vec<Value> = args;
+                let mut self_val: Option<Value> = None;
+                if params.iter().any(|p| p.is_self) {
+                    if rest.is_empty() {
+                        return Err(RuntimeError::NotCallable {
+                            type_name: format!("method {name} requires a receiver"),
+                            span: Some(span),
+                        });
+                    }
+                    self_val = Some(rest.remove(0));
+                }
                 let expected = params.iter().filter(|p| !p.is_self).count();
-                if args.len() != expected {
+                if rest.len() != expected {
                     return Err(RuntimeError::NotCallable {
                         type_name: format!(
                             "wrong arg count: {} expected {}, got {}",
                             name,
                             expected,
-                            args.len()
+                            rest.len()
                         ),
                         span: Some(span),
                     });
@@ -280,7 +379,10 @@ impl Interpreter {
                 let saved_env = std::mem::replace(&mut self.env, (*closure).borrow().clone());
                 self.env.set_call_depth(current_depth);
                 self.env.push_call(&name)?;
-                for (param, arg) in params.iter().filter(|p| !p.is_self).zip(args) {
+                if let Some(sv) = self_val {
+                    self.env.define("self".to_string(), sv);
+                }
+                for (param, arg) in params.iter().filter(|p| !p.is_self).zip(rest) {
                     self.env.define(param.name.clone(), arg);
                 }
                 let result = match &body {
@@ -363,53 +465,94 @@ impl Interpreter {
 
     /// Assign `value` to a target expression.
     fn eval_assign(&mut self, target: &Expr, value: Value) -> Result<Value, RuntimeError> {
-        match target {
-            Expr::Identifier(id) => {
-                self.env.set(&id.name, value.clone())?;
-                Ok(value)
-            }
-            Expr::Field(f) => {
-                // obj.field = value — mutate the struct held in the environment
-                if let Expr::Identifier(obj_ident) = &*f.object {
-                    if let Some(Value::Struct { name, mut fields }) =
-                        self.env.get(&obj_ident.name)
-                    {
-                        fields.insert(f.field.clone(), value.clone());
-                        self.env.set(&obj_ident.name, Value::Struct { name, fields })?;
-                        return Ok(value);
-                    }
+        // Direct variable assignment.
+        if let Expr::Identifier(id) = target {
+            self.env.set(&id.name, value.clone())?;
+            return Ok(value);
+        }
+        // Path-based assignment (`a.b[i].c = v`): rebuild the value from the
+        // innermost step outward, then store it back on the base variable.
+        if let Some(base) = Self::base_identifier(target) {
+            let mut current = value.clone();
+            let mut path = Vec::new();
+            self.collect_assign_path(target, &mut path)?;
+            for step in path.iter().rev() {
+                match step {
+                    PathStep::Field(name) => match current {
+                        Value::Struct { name: n, mut fields } => {
+                            fields.insert(name.clone(), value.clone());
+                            current = Value::Struct { name: n, fields };
+                        }
+                        other => {
+                            return Err(RuntimeError::TypeError {
+                                expected: "struct field assignment".to_string(),
+                                got: other.type_name().to_string(),
+                            })
+                        }
+                    },
+                    PathStep::Index(idx) => match current {
+                        Value::Array(mut arr) => {
+                            if *idx >= arr.len() {
+                                return Err(RuntimeError::IndexOutOfBounds {
+                                    index: *idx as i64,
+                                    length: arr.len(),
+                                    span: None,
+                                });
+                            }
+                            arr[*idx] = value.clone();
+                            current = Value::Array(arr);
+                        }
+                        other => {
+                            return Err(RuntimeError::TypeError {
+                                expected: "array index assignment".to_string(),
+                                got: other.type_name().to_string(),
+                            })
+                        }
+                    },
                 }
-                Err(RuntimeError::TypeError {
-                    expected: "struct field assignment".to_string(),
-                    got: "unsupported target".to_string(),
-                })
+            }
+            self.env.set(&base, current)?;
+            return Ok(value);
+        }
+        Err(RuntimeError::TypeError {
+            expected: "assignable target".to_string(),
+            got: "expression".to_string(),
+        })
+    }
+
+    /// Collect the mutation path (from base outward) for a nested target.
+    fn collect_assign_path(
+        &mut self,
+        expr: &Expr,
+        path: &mut Vec<PathStep>,
+    ) -> Result<(), RuntimeError> {
+        match expr {
+            Expr::Field(f) => {
+                self.collect_assign_path(&f.object, path)?;
+                path.push(PathStep::Field(f.field.clone()));
+                Ok(())
             }
             Expr::Index(i) => {
-                // arr[idx] = value — mutate the array held in the environment
-                if let Expr::Identifier(arr_ident) = &*i.object {
-                    if let Some(Value::Array(mut arr)) = self.env.get(&arr_ident.name) {
-                        let idx = self.eval_expr(&i.index)?.as_int()? as usize;
-                        if idx >= arr.len() {
-                            return Err(RuntimeError::IndexOutOfBounds {
-                                index: idx as i64,
-                                length: arr.len(),
-                                span: Some(i.span),
-                            });
-                        }
-                        arr[idx] = value.clone();
-                        self.env.set(&arr_ident.name, Value::Array(arr))?;
-                        return Ok(value);
-                    }
-                }
-                Err(RuntimeError::TypeError {
-                    expected: "array index assignment".to_string(),
-                    got: "unsupported target".to_string(),
-                })
+                let idx = self.eval_expr(&i.index)?.as_int()? as usize;
+                self.collect_assign_path(&i.object, path)?;
+                path.push(PathStep::Index(idx));
+                Ok(())
             }
+            Expr::Identifier(_) => Ok(()),
             _ => Err(RuntimeError::TypeError {
                 expected: "assignable target".to_string(),
                 got: "expression".to_string(),
             }),
+        }
+    }
+
+    /// The base variable of a nested assignment target (`a` in `a.b[i].c`).
+    fn base_identifier(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Identifier(id) => Some(id.name.clone()),
+            Expr::Field(f) => Self::base_identifier(&f.object),
+            Expr::Index(i) => Self::base_identifier(&i.object),
+            _ => None,
         }
     }
 
@@ -491,10 +634,11 @@ impl Interpreter {
             _ => {}
         }
 
-        // User-defined methods are named `<type>_<method>`; for structs the
-        // type part is the struct's own name.
+        // User-defined methods are named `<type>_<method>`; for structs and
+        // enums the type part is the value's own name.
         let type_base = match &obj {
             Value::Struct { name, .. } => name.clone(),
+            Value::Enum { name, .. } => name.clone(),
             other => other.type_name().to_string(),
         };
         let method_name = format!("{type_base}_{method}");
@@ -782,11 +926,16 @@ impl Interpreter {
                 LiteralValue::Null => matches!(value, Value::Null),
             },
 
-            Pattern::EnumVariant(ev) => {
-                // TODO: full enum variant matching (Phase 4+ feature)
-                // For now, check the struct name and variant name
-                matches!(value, Value::Struct { name, .. } if name.contains(&ev.variant_name))
-            }
+            Pattern::EnumVariant(ev) => match value {
+                Value::Enum { name, variant, .. } => {
+                    let name_ok = match &ev.enum_name {
+                        Some(expected) => expected == name,
+                        None => true,
+                    };
+                    name_ok && variant == &ev.variant_name
+                }
+                _ => false,
+            },
 
             Pattern::Or(or) => or
                 .alternatives
@@ -802,12 +951,14 @@ impl Interpreter {
                 self.env.define(b.name.clone(), value.clone());
             }
             Pattern::EnumVariant(ev) => {
-                // Bind inner values if the struct has matching fields
-                if let Value::Struct { fields, .. } = value {
-                    for (i, binding_pat) in ev.bindings.iter().enumerate() {
-                        if let Some(field_val) = fields.values().nth(i) {
-                            self.bind_pattern(binding_pat, field_val);
-                        }
+                // Bind inner values for enum variants with a payload.
+                if let Value::Enum {
+                    payload: Some(payload),
+                    ..
+                } = value
+                {
+                    for binding_pat in &ev.bindings {
+                        self.bind_pattern(binding_pat, payload);
                     }
                 }
             }

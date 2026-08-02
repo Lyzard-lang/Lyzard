@@ -140,6 +140,10 @@ impl TypeChecker {
                 name: g.name.clone(),
                 args: g.args.iter().map(|a| self.resolve_type(a)).collect(),
             },
+            TypeExpr::Fn(params, ret, _) => ResolvedType::Function {
+                params: params.iter().map(|p| self.resolve_type(p)).collect(),
+                return_type: Box::new(self.resolve_type(ret)),
+            },
             TypeExpr::Never(_) => ResolvedType::Never,
             _ => ResolvedType::Unknown,
         }

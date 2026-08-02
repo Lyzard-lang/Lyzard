@@ -587,6 +587,7 @@ pub enum TypeExpr {
     Map(Box<TypeExpr>, Box<TypeExpr>, Span),
     Tuple(Vec<TypeExpr>, Span),
     Generic(GenericType),
+    Fn(Vec<TypeExpr>, Box<TypeExpr>, Span),
     Never(Span),
 }
 
@@ -599,6 +600,7 @@ impl TypeExpr {
             Self::Map(_, _, s) => *s,
             Self::Tuple(_, s) => *s,
             Self::Generic(t) => t.span,
+            Self::Fn(_, _, s) => *s,
             Self::Never(s) => *s,
         }
     }

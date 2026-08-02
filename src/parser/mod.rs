@@ -250,9 +250,10 @@ impl Parser {
                 span: f_start.merge(self.prev_span()),
             });
             self.skip_newlines();
-            if !self.advance_if(TokenKind::Comma) {
+            if self.check(TokenKind::RightBrace) || self.is_at_end() {
                 break;
             }
+            self.advance_if(TokenKind::Comma);
         }
         self.expect_hint(TokenKind::RightBrace, "Close struct with '}'")?;
         let span = start.merge(self.prev_span());
@@ -305,9 +306,10 @@ impl Parser {
                         span: f_start.merge(self.prev_span()),
                     });
                     self.skip_newlines();
-                    if !self.advance_if(TokenKind::Comma) {
+                    if self.check(TokenKind::RightBrace) || self.is_at_end() {
                         break;
                     }
+                    self.advance_if(TokenKind::Comma);
                 }
                 self.expect_hint(TokenKind::RightBrace, "Close struct variant with '}'")?;
                 EnumVariantKind::Struct(fields)
@@ -320,9 +322,10 @@ impl Parser {
                 span: v_start.merge(self.prev_span()),
             });
             self.skip_newlines();
-            if !self.advance_if(TokenKind::Comma) {
+            if self.check(TokenKind::RightBrace) || self.is_at_end() {
                 break;
             }
+            self.advance_if(TokenKind::Comma);
         }
         self.expect_hint(TokenKind::RightBrace, "Close enum with '}'")?;
         let span = start.merge(self.prev_span());
@@ -543,6 +546,32 @@ impl Parser {
                     }
                     self.expect_hint(TokenKind::RightParen, "Close tuple type with ')'")?;
                     TypeExpr::Tuple(types, start.merge(self.prev_span()))
+                }
+                TokenKind::Fn => {
+                    self.advance();
+                    self.expect_hint(
+                        TokenKind::LeftParen,
+                        "Function type needs 'fn(params) -> ret'",
+                    )?;
+                    let mut params = Vec::new();
+                    while !self.check(TokenKind::RightParen) && !self.is_at_end() {
+                        self.skip_newlines();
+                        params.push(self.parse_type()?);
+                        self.skip_newlines();
+                        if !self.advance_if(TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect_hint(
+                        TokenKind::RightParen,
+                        "Close function type with ')'",
+                    )?;
+                    self.expect_hint(
+                        TokenKind::Arrow,
+                        "Function type needs '-> ret'",
+                    )?;
+                    let return_type = self.parse_type()?;
+                    TypeExpr::Fn(params, Box::new(return_type), start.merge(self.prev_span()))
                 }
                 TokenKind::LeftBracket => {
                     let s = self.current_span();

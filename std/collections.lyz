@@ -1,0 +1,190 @@
+-- LYZARD Collections — dynamic arrays, hash maps, sets
+
+
+-- ═══════════════════════════════════════════════════
+--   LIST<T> — a growable array
+-- ═══════════════════════════════════════════════════
+
+
+pub struct List<T> {
+    data:     [T]
+    length:   int
+    capacity: int
+}
+
+
+impl<T> List<T> {
+    pub fn new() -> List<T> {
+        return List { data: [], length: 0, capacity: 0 }
+    }
+
+
+    pub fn fromArray(arr: [T]) -> List<T> {
+        return List { data: arr, length: len(arr), capacity: len(arr) }
+    }
+
+
+    pub fn len(self) -> int {
+        return self.length
+    }
+
+
+    pub fn isEmpty(self) -> bool {
+        return self.length == 0
+    }
+
+
+    pub fn push(self, item: T) -> List<T> {
+        -- Doubling growth strategy: amortized O(1) append
+        if self.length >= self.capacity {
+            let newCapacity = if self.capacity == 0 { 4 } else { self.capacity * 2 }
+            let mut newData = []
+            let mut i = 0
+            while i < self.length {
+                newData = push(newData, self.data[i])
+                i = i + 1
+            }
+            newData = push(newData, item)
+            return List { data: newData, length: self.length + 1, capacity: newCapacity }
+        }
+        let newData = push(self.data, item)
+        return List { data: newData, length: self.length + 1, capacity: self.capacity }
+    }
+
+
+    pub fn get(self, index: int) -> Option<T> {
+        if index < 0 || index >= self.length {
+            return Option.None
+        }
+        return Option.Some(self.data[index])
+    }
+
+
+    pub fn first(self) -> Option<T> {
+        return self.get(0)
+    }
+
+
+    pub fn last(self) -> Option<T> {
+        return self.get(self.length - 1)
+    }
+
+
+    pub fn contains(self, item: T) -> bool {
+        let mut i = 0
+        while i < self.length {
+            if self.data[i] == item {
+                return true
+            }
+            i = i + 1
+        }
+        return false
+    }
+
+
+    pub fn toArray(self) -> [T] {
+        return self.data
+    }
+}
+
+
+-- ═══════════════════════════════════════════════════
+--   MAP<K, V> — a simple hash-free association list
+--   (a real hash table needs a hash function trait — future phase;
+--    this linear version is correct, just O(n) lookups for now)
+-- ═══════════════════════════════════════════════════
+
+
+pub struct MapEntry<K, V> {
+    key:   K
+    value: V
+}
+
+
+pub struct Map<K, V> {
+    entries: List<MapEntry<K, V>>
+}
+
+
+impl<K, V> Map<K, V> {
+    pub fn new() -> Map<K, V> {
+        return Map { entries: List.new() }
+    }
+
+
+    pub fn set(self, key: K, value: V) -> Map<K, V> {
+        -- Replace existing entry if key already present, else append
+        let mut newEntries = List.new()
+        let mut found = false
+        let mut i = 0
+        while i < self.entries.len() {
+            let entry = self.entries.get(i).unwrap()
+            if entry.key == key {
+                newEntries = newEntries.push(MapEntry { key: key, value: value })
+                found = true
+            } else {
+                newEntries = newEntries.push(entry)
+            }
+            i = i + 1
+        }
+        if !found {
+            newEntries = newEntries.push(MapEntry { key: key, value: value })
+        }
+        return Map { entries: newEntries }
+    }
+
+
+    pub fn get(self, key: K) -> Option<V> {
+        let mut i = 0
+        while i < self.entries.len() {
+            let entry = self.entries.get(i).unwrap()
+            if entry.key == key {
+                return Option.Some(entry.value)
+            }
+            i = i + 1
+        }
+        return Option.None
+    }
+
+
+    pub fn has(self, key: K) -> bool {
+        return self.get(key).isSome()
+    }
+
+
+    pub fn len(self) -> int {
+        return self.entries.len()
+    }
+}
+
+
+-- ═══════════════════════════════════════════════════
+--   SET<T> — a collection of unique values, built on Map<T, bool>
+-- ═══════════════════════════════════════════════════
+
+
+pub struct Set<T> {
+    map: Map<T, bool>
+}
+
+
+impl<T> Set<T> {
+    pub fn new() -> Set<T> {
+        return Set { map: Map.new() }
+    }
+
+
+    pub fn add(self, item: T) -> Set<T> {
+        return Set { map: self.map.set(item, true) }
+    }
+
+
+    pub fn contains(self, item: T) -> bool {
+        return self.map.has(item)
+    }
+
+
+    pub fn len(self) -> int {
+        return self.map.len()
+    }
+}
