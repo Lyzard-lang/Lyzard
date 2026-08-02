@@ -41,16 +41,11 @@ void lyz_retain(void* data_ptr) {
     header->refcount += 1;
 }
 
-// The array/struct destructors recursively release nested pointers before
-// freeing. Placeholder no-op bodies for now — the real recursive versions
-// arrive with array/struct layout support in later phases.
-void lyz_release_array_contents(void* data_ptr) {
-    (void)data_ptr;
-}
-
-void lyz_release_struct_contents(void* data_ptr) {
-    (void)data_ptr;
-}
+// Forward declaration — the array/struct destructors need to recursively
+// release nested pointers before freeing themselves. Their real recursive
+// implementations live in lyz_destructors.c (linked alongside this file).
+void lyz_release_array_contents(void* data_ptr);
+void lyz_release_struct_contents(void* data_ptr);
 
 // Decrement the refcount — called whenever a reference goes out of scope.
 // Frees the object (and recursively releases its children) if it hits 0.
