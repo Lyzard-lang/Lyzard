@@ -9,8 +9,15 @@ use crate::types::ResolvedType;
 use crate::interpreter::error::RuntimeError;
 use crate::memory::lifetime::{LifetimeTracker, is_refcounted};
 use llvm_ir::IrBuilder;
-use types::llvm_type;
+use types::{llvm_type, llvm_zero_value};
 use mangling::mangle_fn_name;
+
+/// LYZARD builtins that map directly onto native runtime functions.
+/// (builtin name, runtime symbol, resolved return type)
+const INTRINSICS: &[(&str, &str, ResolvedType)] = &[
+    ("slice", "lyz_slice", ResolvedType::Str),
+    ("len",   "lyz_strlen", ResolvedType::Int),
+];
 
 /// Tracks where a local variable's value lives (an LLVM register or stack slot)
 #[derive(Debug, Clone)]
@@ -74,6 +81,8 @@ impl CodeGenerator {
         self.builder.emit_module("declare ptr @lyz_alloc(i64, i64)");
         self.builder.emit_module("declare void @lyz_retain(ptr)");
         self.builder.emit_module("declare void @lyz_release(ptr)");
+        self.builder.emit_module("declare ptr @lyz_slice(ptr, i64, i64)");
+        self.builder.emit_module("declare i64 @lyz_strlen(ptr)");
         self.builder.emit_module("");
     }
 
@@ -279,6 +288,25 @@ impl CodeGenerator {
         Ok((val, ty))
     }
 
+    /// Builtin calls that compile to a direct native runtime function call
+    /// (slice, len, ...) instead of a LYZARD function definition. Returns
+    /// Some(result) when `fn_name` matches a known intrinsic, None otherwise
+    /// (so normal LYZARD functions fall through to the generic path).
+    fn try_compile_intrinsic_call(
+        &mut self,
+        fn_name: &str,
+        arg_pairs: &[(String, String)],
+    ) -> Option<Result<(String, ResolvedType), RuntimeError>> {
+        for (name, runtime_fn, ret_ty) in INTRINSICS {
+            if *name == fn_name {
+                let result = self.builder.emit_call(&llvm_type(ret_ty), runtime_fn, arg_pairs);
+                let val = result.unwrap_or_else(|| llvm_zero_value(ret_ty));
+                return Some(Ok((val, ret_ty.clone())));
+            }
+        }
+        None
+    }
+
     // ══════════════════════════════════════════
     //   COMPILE STATEMENTS
     // ══════════════════════════════════════════
@@ -442,6 +470,11 @@ impl CodeGenerator {
                 for arg in &c.args {
                     let (val, ty) = self.compile_call_arg_with_retain(&arg.value)?;
                     arg_pairs.push((llvm_type(&ty), val));
+                }
+
+                // Builtin intrinsics map directly onto native runtime functions
+                if let Some(result) = self.try_compile_intrinsic_call(&fn_name, &arg_pairs) {
+                    return result;
                 }
 
                 let mangled = mangle_fn_name(&fn_name);

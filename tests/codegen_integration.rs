@@ -75,6 +75,25 @@ fn test_runtime_declarations_present() {
 }
 
 #[test]
+fn test_slice_builtin_compiles_to_runtime_call() {
+    let ir = generate_ir(r#"fn f() -> int { let s = slice("hello world", 0, 5) return 0 }"#);
+    assert!(ir.contains("call ptr @lyz_slice(ptr @.str.0, i64 0, i64 5)"));
+}
+
+#[test]
+fn test_len_builtin_compiles_to_runtime_call() {
+    let ir = generate_ir(r#"fn f() -> int { let n = len("hello") return 0 }"#);
+    assert!(ir.contains("call i64 @lyz_strlen(ptr @.str.0)"));
+}
+
+#[test]
+fn test_slice_runtime_declaration_present() {
+    let ir = generate_ir("fn f() -> int { return 1 }");
+    assert!(ir.contains("declare ptr @lyz_slice(ptr, i64, i64)"));
+    assert!(ir.contains("declare i64 @lyz_strlen(ptr)"));
+}
+
+#[test]
 fn test_arithmetic_all_ops_present() {
     let ir = generate_ir(r#"
 fn ops(a: int, b: int) -> int {
