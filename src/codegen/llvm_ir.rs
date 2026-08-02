@@ -3,7 +3,7 @@ pub struct IrBuilder {
     /// The module-level output (type defs, global strings, function decls)
     module_lines: Vec<String>,
     /// The current function body being built
-    current_fn_lines: Vec<String>,
+    pub current_fn_lines: Vec<String>,
     /// Counter for fresh SSA register names (%t0, %t1, ...)
     reg_counter: usize,
     /// Counter for fresh basic block labels (bb0, bb1, ...)
