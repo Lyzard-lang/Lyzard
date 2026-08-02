@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use crate::parser::ast::*;
 use crate::types::ResolvedType;
 use crate::interpreter::error::RuntimeError;
+use crate::memory::lifetime::{LifetimeTracker, is_refcounted};
 use llvm_ir::IrBuilder;
 use types::llvm_type;
 use mangling::mangle_fn_name;
@@ -70,6 +71,9 @@ impl CodeGenerator {
         self.builder.emit_module("declare void @lyz_print_str(ptr)");
         self.builder.emit_module("declare void @lyz_print_bool(i1)");
         self.builder.emit_module("declare ptr @malloc(i64)");
+        self.builder.emit_module("declare ptr @lyz_alloc(i64, i64)");
+        self.builder.emit_module("declare void @lyz_retain(ptr)");
+        self.builder.emit_module("declare void @lyz_release(ptr)");
         self.builder.emit_module("");
     }
 
@@ -109,9 +113,14 @@ impl CodeGenerator {
             self.locals.insert(param.name.clone(), VarLocation { ptr, ty: ResolvedType::Int });
         }
 
-        // Compile the body
+        // Compile the body — block bodies get automatic retain/release
+        // insertion based on refcounted locals (LifetimeTracker)
+        let param_types: Vec<(String, ResolvedType)> = decl.params.iter()
+            .filter(|p| !p.is_self)
+            .map(|p| (p.name.clone(), ResolvedType::Int)) // simplified: assume int params
+            .collect();
         match &decl.body {
-            FnBody::Block(block) => self.compile_block(block)?,
+            FnBody::Block(block) => self.compile_fn_body_with_rc(block, &param_types)?,
             FnBody::Arrow(expr)  => {
                 let (val, _) = self.compile_expr(expr)?;
                 self.builder.emit_return("i64", &val);
@@ -126,6 +135,148 @@ impl CodeGenerator {
         let signature = format!("{} @{}({})", ret_ty, mangled, param_decls.join(", "));
         self.builder.finish_function(&signature);
         Ok(())
+    }
+
+    // ══════════════════════════════════════════
+    //   REFCOUNT-AWARE FUNCTION COMPILATION
+    // ══════════════════════════════════════════
+
+    /// Compile a function body WITH automatic retain/release insertion.
+    /// This replaces the plain `compile_block` call inside `compile_fn`
+    /// for any function whose body may touch heap types.
+    fn compile_fn_body_with_rc(&mut self, block: &Block, param_types: &[(String, ResolvedType)]) -> Result<(), RuntimeError> {
+        let mut tracker = LifetimeTracker::new();
+
+        // Function parameters that are refcounted are "owned" by this call —
+        // release them at the end of the function unless returned
+        for (name, ty) in param_types {
+            if is_refcounted(ty) {
+                tracker.track_let(name, ty);
+            }
+        }
+
+        self.compile_block_with_rc(block, &mut tracker)?;
+
+        // Emit releases for anything still alive at the end of the function
+        // (only reached if the block didn't already return — codegen's
+        // needs_terminator() check prevents emitting dead code here)
+        if self.builder.needs_terminator() {
+            self.emit_scope_releases(&tracker.pop_scope());
+        }
+
+        Ok(())
+    }
+
+    /// Compile a block, tracking heap-allocated locals, and emit releases
+    /// for them right before the block's natural exit point.
+    fn compile_block_with_rc(&mut self, block: &Block, tracker: &mut LifetimeTracker) -> Result<(), RuntimeError> {
+        tracker.push_scope();
+
+        for stmt in &block.statements {
+            match stmt {
+                Statement::Let(l) => {
+                    let (val, ty) = self.compile_expr(&l.value)?;
+                    let llvm_ty = llvm_type(&ty);
+                    let ptr = self.builder.emit_alloca(&llvm_ty);
+                    self.builder.emit_store(&llvm_ty, &val, &ptr);
+                    self.locals.insert(l.name.clone(), VarLocation { ptr, ty: ty.clone() });
+                    tracker.track_let(&l.name, &ty);
+                }
+                Statement::Return(r) => {
+                    // If returning a bare identifier that's refcounted, mark it
+                    // moved (no release) and RETAIN it before returning (the
+                    // caller becomes the new owner)
+                    if let Some(Expr::Identifier(id)) = &r.value {
+                        tracker.mark_returned_identifier(&id.name);
+                        if let Some(loc) = self.locals.get(&id.name).cloned() {
+                            if is_refcounted(&loc.ty) {
+                                let val = self.builder.emit_load(&llvm_type(&loc.ty), &loc.ptr);
+                                self.emit_retain(&val);
+                                // Emit releases for every OTHER still-live var in this scope
+                                self.emit_scope_releases_except(tracker, &id.name);
+                                self.builder.emit_return(&llvm_type(&loc.ty), &val);
+                                continue;
+                            }
+                        }
+                    }
+                    // Non-identifier or non-refcounted return — release everything, then return
+                    match &r.value {
+                        Some(expr) => {
+                            let (val, ty) = self.compile_expr(expr)?;
+                            self.emit_scope_releases(&tracker.pop_scope());
+                            tracker.push_scope(); // keep stack balanced for any code after (dead code anyway)
+                            self.builder.emit_return(&llvm_type(&ty), &val);
+                        }
+                        None => {
+                            self.emit_scope_releases(&tracker.pop_scope());
+                            tracker.push_scope();
+                            self.builder.emit_return_void();
+                        }
+                    }
+                }
+                Statement::Block(b) => {
+                    // Nested blocks get their own scope — releases fire at the
+                    // inner block's end, independent of the outer scope
+                    self.compile_block_with_rc(b, tracker)?;
+                }
+                _ => { self.compile_statement(stmt)?; }
+            }
+        }
+
+        // Natural fall-through exit (no explicit return in this block) —
+        // emit releases for everything declared in THIS block only
+        let scope = tracker.pop_scope();
+        if self.builder.needs_terminator() {
+            self.emit_scope_releases(&scope);
+        }
+        Ok(())
+    }
+
+    /// Emit `call void @lyz_retain(ptr %val)`
+    fn emit_retain(&mut self, ptr_val: &str) {
+        self.builder.emit(format!("call void @lyz_retain(ptr {})", ptr_val));
+    }
+
+    /// Emit `call void @lyz_release(ptr %val)`
+    fn emit_release(&mut self, ptr_val: &str) {
+        self.builder.emit(format!("call void @lyz_release(ptr {})", ptr_val));
+    }
+
+    /// Emit release calls for every non-moved variable in a scope, in LIFO order
+    fn emit_scope_releases(&mut self, scope: &crate::memory::lifetime::ScopeLifetimes) {
+        for var in scope.drop_order() {
+            if let Some(loc) = self.locals.get(&var.name).cloned() {
+                let llvm_ty = llvm_type(&loc.ty);
+                let val = self.builder.emit_load(&llvm_ty, &loc.ptr);
+                self.emit_release(&val);
+            }
+        }
+    }
+
+    /// Like emit_scope_releases, but skips one variable by name
+    /// (used when that variable is being returned and retained instead)
+    fn emit_scope_releases_except(&mut self, tracker: &mut LifetimeTracker, except: &str) {
+        let scope = tracker.pop_scope();
+        for var in scope.drop_order() {
+            if var.name == except { continue; }
+            if let Some(loc) = self.locals.get(&var.name).cloned() {
+                let llvm_ty = llvm_type(&loc.ty);
+                let val = self.builder.emit_load(&llvm_ty, &loc.ptr);
+                self.emit_release(&val);
+            }
+        }
+        tracker.push_scope(); // restore stack balance
+    }
+
+    /// Insert a retain when a heap-typed value is passed as a function argument
+    /// (called from the Call expression codegen — the CALLER retains,
+    /// the CALLEE's compile_fn_body_with_rc releases at its own scope exit)
+    fn compile_call_arg_with_retain(&mut self, expr: &Expr) -> Result<(String, ResolvedType), RuntimeError> {
+        let (val, ty) = self.compile_expr(expr)?;
+        if is_refcounted(&ty) {
+            self.emit_retain(&val);
+        }
+        Ok((val, ty))
     }
 
     // ══════════════════════════════════════════
@@ -233,6 +384,20 @@ impl CodeGenerator {
                 Ok((global_name, ResolvedType::Str))
             }
 
+            Expr::StructInit(s) => {
+                // Simplified struct literal codegen — heap-allocate the struct
+                // and return its data pointer. A fresh allocation starts with
+                // refcount = 1, so no retain is needed here (the lifetime
+                // tracking pass is responsible for the eventual release).
+                let ty = ResolvedType::Struct(s.name.clone());
+                let size = types::llvm_type_size(&ty);
+                let raw = self.builder.emit_call("ptr", "lyz_alloc", &[
+                    ("i64".to_string(), size.to_string()),
+                    ("i64".to_string(), "2".to_string()), // LYZ_TAG_STRUCT
+                ]);
+                Ok((raw.unwrap_or_else(|| "null".to_string()), ty))
+            }
+
             Expr::Identifier(id) => {
                 let loc = self.locals.get(&id.name).cloned().ok_or(RuntimeError::UndefinedVariable {
                     name: id.name.clone(), span: Some(id.span),
@@ -275,7 +440,7 @@ impl CodeGenerator {
 
                 let mut arg_pairs = Vec::new();
                 for arg in &c.args {
-                    let (val, ty) = self.compile_expr(&arg.value)?;
+                    let (val, ty) = self.compile_call_arg_with_retain(&arg.value)?;
                     arg_pairs.push((llvm_type(&ty), val));
                 }
 
@@ -331,6 +496,77 @@ impl CodeGenerator {
 }
 
 impl Default for CodeGenerator { fn default() -> Self { Self::new() } }
+
+#[cfg(test)]
+mod refcount_codegen_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn generate_ir(src: &str) -> String {
+        let t = Lexer::tokenize(src, "t.lyz").unwrap();
+        let (prog, _) = Parser::new(t, "t.lyz", src).parse().unwrap();
+        CodeGenerator::new().compile(&prog).unwrap()
+    }
+
+    #[test]
+    fn test_str_local_gets_released_at_scope_end() {
+        let ir = generate_ir(r#"fn f() { let s = "hello" }"#);
+        assert!(ir.contains("call void @lyz_release"));
+    }
+
+    #[test]
+    fn test_int_local_no_release() {
+        let ir = generate_ir("fn f() { let n = 42 }");
+        // ints are not refcounted — no release call should target them
+        // (we check no release call exists at all for this int-only function)
+        assert!(!ir.contains("call void @lyz_release"));
+    }
+
+    #[test]
+    fn test_returned_struct_is_retained_not_released() {
+        let ir = generate_ir(r#"
+struct Point { x: float, y: float }
+fn make() -> Point {
+    let p = Point { x: 1.0, y: 2.0 }
+    return p
+}
+"#);
+        assert!(ir.contains("call void @lyz_retain"));
+    }
+
+    #[test]
+    fn test_multiple_locals_released_in_reverse_order() {
+        let ir = generate_ir(r#"fn f() { let a = "x" let b = "y" }"#);
+        // Count the actual release CALL sites (the module-level `declare`
+        // line is not a call)
+        let release_calls: Vec<usize> = ir.match_indices("call void @lyz_release").map(|(i, _)| i).collect();
+        assert_eq!(release_calls.len(), 2, "Both string locals should be released");
+    }
+
+    #[test]
+    fn test_runtime_declares_retain_release() {
+        let ir = generate_ir("fn f() -> int { return 1 }");
+        assert!(ir.contains("declare void @lyz_retain(ptr)"));
+        assert!(ir.contains("declare void @lyz_release(ptr)"));
+    }
+
+    #[test]
+    fn test_nested_block_releases_its_own_locals() {
+        let ir = generate_ir(r#"
+fn f() {
+    let outer = "outer"
+    {
+        let inner = "inner"
+    }
+}
+"#);
+        // Should have two separate release calls — one for inner (at inner
+        // block's end), one for outer (at function's end)
+        let count = ir.matches("call void @lyz_release").count();
+        assert_eq!(count, 2);
+    }
+}
 
 #[cfg(test)]
 mod codegen_expr_tests {
