@@ -23,6 +23,7 @@ pub fn all_builtins() -> Vec<(&'static str, usize, BuiltinFn)> {
         ("first", 1, builtin_first),
         ("last", 1, builtin_last),
         ("contains", 2, builtin_contains),
+        ("slice", 3, builtin_slice),
         ("toInt", 1, builtin_to_int),
         ("toFloat", 1, builtin_to_float),
         ("abs", 1, builtin_abs),
@@ -204,6 +205,28 @@ fn builtin_contains(args: Vec<Value>) -> Result<Value, RuntimeError> {
         }
         other => Err(RuntimeError::TypeError {
             expected: "array or str".to_string(),
+            got: other.type_name().to_string(),
+        }),
+    }
+}
+
+fn builtin_slice(args: Vec<Value>) -> Result<Value, RuntimeError> {
+    match &args[0] {
+        Value::Str(s) => {
+            let start = args[1].as_int()?;
+            let end = args[2].as_int()?;
+            let chars: Vec<char> = s.chars().collect();
+            let len = chars.len() as i64;
+            let start = start.clamp(0, len);
+            let end = end.clamp(0, len);
+            if start >= end {
+                return Ok(Value::Str(String::new()));
+            }
+            let sub: String = chars[start as usize..end as usize].iter().collect();
+            Ok(Value::Str(sub))
+        }
+        other => Err(RuntimeError::TypeError {
+            expected: "str".to_string(),
             got: other.type_name().to_string(),
         }),
     }

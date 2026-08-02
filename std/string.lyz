@@ -1,0 +1,104 @@
+-- LYZARD String Utilities — built on top of built-in str methods
+
+
+pub fn join(items: [str], separator: str) -> str {
+    if len(items) == 0 {
+        return ""
+    }
+    let mut result = items[0]
+    let mut i = 1
+    while i < len(items) {
+        result = result + separator + items[i]
+        i = i + 1
+    }
+    return result
+}
+
+
+pub fn repeat(s: str, times: int) -> str {
+    let mut result = ""
+    let mut i = 0
+    while i < times {
+        result = result + s
+        i = i + 1
+    }
+    return result
+}
+
+
+pub fn padLeft(s: str, width: int, padChar: str) -> str {
+    let mut result = s
+    while len(result) < width {
+        result = padChar + result
+    }
+    return result
+}
+
+
+pub fn padRight(s: str, width: int, padChar: str) -> str {
+    let mut result = s
+    while len(result) < width {
+        result = result + padChar
+    }
+    return result
+}
+
+
+pub fn indexOf(s: str, needle: str) -> Option<int> {
+    let sLen = len(s)
+    let nLen = len(needle)
+    if nLen == 0 || nLen > sLen {
+        return Option.None
+    }
+    let mut i = 0
+    while i <= sLen - nLen {
+        if slice(s, i, i + nLen) == needle {
+            return Option.Some(i)
+        }
+        i = i + 1
+    }
+    return Option.None
+}
+
+
+pub fn replace(s: str, target: str, replacement: str) -> str {
+    match indexOf(s, target) {
+        Option.Some(idx) -> {
+            let before = slice(s, 0, idx)
+            let after  = slice(s, idx + len(target), len(s))
+            return before + replacement + after
+        }
+        Option.None -> return s
+    }
+}
+
+
+pub fn isBlank(s: str) -> bool {
+    return len(s.trim()) == 0
+}
+
+
+pub fn reverse(s: str) -> str {
+    let mut result = ""
+    let mut i = len(s) - 1
+    while i >= 0 {
+        result = result + s[i]
+        i = i - 1
+    }
+    return result
+}
+
+
+pub fn isPalindrome(s: str) -> bool {
+    return s == reverse(s)
+}
+
+
+pub fn capitalize(s: str) -> str {
+    if len(s) == 0 {
+        return s
+    }
+    let first = slice(s, 0, 1).upper()
+    let rest  = slice(s, 1, len(s))
+    return first + rest
+}
