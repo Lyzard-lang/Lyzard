@@ -1,3 +1,4 @@
+pub mod link;
 pub mod llvm_ir;
 pub mod mangling;
 pub mod types;
