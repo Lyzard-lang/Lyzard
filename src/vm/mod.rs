@@ -5,6 +5,7 @@ pub mod opcode;
 use std::collections::HashMap;
 use crate::interpreter::value::Value;
 use crate::interpreter::error::RuntimeError;
+use crate::interpreter::builtins::all_builtins;
 use opcode::{Chunk, Opcode};
 
 /// One active function call frame
@@ -219,10 +220,12 @@ impl VM {
                 }
                 Opcode::LoadGlobal(name) => {
                     let val = self.globals.get(&name).cloned().unwrap_or(Value::Null);
-                    // Check functions too
+                    // Check functions and builtins too
                     if matches!(val, Value::Null) {
                         if self.functions.contains_key(&name) {
                             self.stack.push(Value::Str(format!("<fn:{}>", name)));
+                        } else if let Some((bname, _, func)) = all_builtins().iter().find(|(n, _, _)| *n == name) {
+                            self.stack.push(Value::Builtin { name: bname, func: *func });
                         } else {
                             self.stack.push(val);
                         }
@@ -466,12 +469,12 @@ impl VM {
     }
 
     fn call_builtin(&mut self, name: &str, args: Vec<Value>) -> Result<(), RuntimeError> {
-        use crate::interpreter::builtins::all_builtins;
         let result = match all_builtins().iter().find(|(n, _, _)| *n == name) {
             Some((_, _, func)) => {
                 if self.capture_output && (name == "print" || name == "println") {
                     let msg = args.first().map(|v| v.to_display_string()).unwrap_or_default();
                     self.output.push(msg);
+                    self.stack.push(Value::Void);
                     return Ok(());
                 }
                 func(args)?
@@ -488,6 +491,7 @@ impl VM {
                 if self.capture_output && (*name == "print" || *name == "println") {
                     let msg = args.first().map(|v| v.to_display_string()).unwrap_or_default();
                     self.output.push(msg);
+                    self.stack.push(Value::Void);
                     return Ok(());
                 }
                 let result = func(args)?;

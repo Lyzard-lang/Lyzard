@@ -60,7 +60,7 @@ impl Compiler {
     }
 
     /// Compile a full program into a main chunk
-    pub fn compile(mut self, program: &Program) -> Result<Chunk, RuntimeError> {
+    pub fn compile(&mut self, program: &Program) -> Result<Chunk, RuntimeError> {
         // First pass: compile all top-level functions
         for decl in &program.declarations {
             if let Declaration::Function(f) = decl {
