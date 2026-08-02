@@ -285,6 +285,21 @@ impl CodeGenerator {
                 Ok((result.unwrap_or_else(|| "0".to_string()), ResolvedType::Int))
             }
 
+            Expr::Assign(a) => {
+                // Only local identifier targets are supported for now
+                let id = match a.target.as_ref() {
+                    Expr::Identifier(id) => id,
+                    _ => return Err(RuntimeError::NotImplemented { feature: "assignment to non-local target".to_string() }),
+                };
+                let loc = self.locals.get(&id.name).cloned().ok_or(RuntimeError::UndefinedVariable {
+                    name: id.name.clone(), span: Some(id.span),
+                })?;
+                let (val, _) = self.compile_expr(&a.value)?;
+                let llty = llvm_type(&loc.ty);
+                self.builder.emit_store(&llty, &val, &loc.ptr);
+                Ok((val, loc.ty))
+            }
+
             _ => Err(RuntimeError::NotImplemented { feature: "this expression in codegen".to_string() }),
         }
     }
