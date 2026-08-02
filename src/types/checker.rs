@@ -415,6 +415,9 @@ impl TypeChecker {
 
             // Function call
             Expr::Call(c) => {
+                if let Some(ty) = self.try_infer_constructor_call(c) {
+                    return ty;
+                }
                 let callee_type = self.infer_expr(&c.callee);
                 let arg_types: Vec<ResolvedType> = c.args.iter().map(|a| self.infer_expr(&a.value)).collect();
                 self.infer_call(callee_type, arg_types, &c.callee, c.span)
@@ -776,6 +779,29 @@ impl TypeChecker {
                 }
                 ResolvedType::Error
             }
+            ResolvedType::Enum(name) => {
+                let name = name.clone();
+                if let Some(variants) = self.enum_variants.get(&name) {
+                    if variants.iter().any(|v| v == field) {
+                        // Enum variant reference (e.g. `Option.None`) — the
+                        // value has the enum's generic type; type params are
+                        // filled in by constructor-call handling.
+                        return ResolvedType::Generic {
+                            name: name.clone(),
+                            args: vec![ResolvedType::Unknown],
+                        };
+                    }
+                    let available = variants.clone();
+                    self.push_error(TypeError::UnknownEnumVariant {
+                        enum_name: name,
+                        variant: field.to_string(),
+                        available,
+                        span,
+                        file: self.file.clone(),
+                    });
+                }
+                ResolvedType::Error
+            }
             other => {
                 self.push_error(TypeError::FieldOnNonStruct {
                     found: other.clone(),
@@ -786,6 +812,37 @@ impl TypeChecker {
                 ResolvedType::Error
             }
         }
+    }
+
+    /// `Option.Some(42)`, `Result.Err("boom")`, `List.new()` — construction
+    /// via a `Type.variantOrStatic(...)` call. The callee is a Field whose
+    /// object is a registered enum or struct type name. Returns None when
+    /// the callee isn't such a call, so normal calls fall through.
+    fn try_infer_constructor_call(&mut self, c: &CallExpr) -> Option<ResolvedType> {
+        let Expr::Field(f) = c.callee.as_ref() else { return None; };
+        let Expr::Identifier(obj) = f.object.as_ref() else { return None; };
+
+        // Enum variant construction: Option.Some(...), Result.Err(...)
+        if let Some(_variants) = self.enum_variants.get(&obj.name) {
+            let arg_types: Vec<ResolvedType> = c.args.iter().map(|a| self.infer_expr(&a.value)).collect();
+            return Some(ResolvedType::Generic {
+                name: obj.name.clone(),
+                args: arg_types,
+            });
+        }
+
+        // Static method / constructor on a struct type: List.new(), Map.new()
+        if self.struct_fields.contains_key(&obj.name) {
+            for arg in &c.args {
+                self.infer_expr(&arg.value);
+            }
+            return Some(ResolvedType::Generic {
+                name: obj.name.clone(),
+                args: vec![ResolvedType::Unknown],
+            });
+        }
+
+        None
     }
 
     fn infer_block_type(&mut self, block: &Block) -> ResolvedType {
@@ -799,8 +856,13 @@ impl TypeChecker {
     }
 
     fn check_statement_type(&mut self, stmt: &Statement) -> ResolvedType {
-        self.check_statement(stmt);
-        ResolvedType::Void
+        match stmt {
+            Statement::Expression(e) => self.infer_expr(&e.expr),
+            _ => {
+                self.check_statement(stmt);
+                ResolvedType::Void
+            }
+        }
     }
 
     // ══════════════════════════════════════════

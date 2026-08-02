@@ -78,6 +78,13 @@ pub enum TypeError {
         span: Span,
         file: String,
     },
+    UnknownEnumVariant {
+        enum_name: String,
+        variant: String,
+        available: Vec<String>,
+        span: Span,
+        file: String,
+    },
     UnaryTypeMismatch {
         op: String,
         found: ResolvedType,
@@ -101,6 +108,7 @@ impl TypeError {
             Self::NonIntegerIndex { span, .. } => *span,
             Self::PropagateOnNonResult { span, .. } => *span,
             Self::UnknownStructField { span, .. } => *span,
+            Self::UnknownEnumVariant { span, .. } => *span,
             Self::UnaryTypeMismatch { span, .. } => *span,
         }
     }
@@ -119,6 +127,7 @@ impl TypeError {
             Self::NonIntegerIndex { file, .. } => file,
             Self::PropagateOnNonResult { file, .. } => file,
             Self::UnknownStructField { file, .. } => file,
+            Self::UnknownEnumVariant { file, .. } => file,
             Self::UnaryTypeMismatch { file, .. } => file,
         }
     }
@@ -270,6 +279,22 @@ impl TypeError {
                     ))
                 } else {
                     Some(format!("Available fields: {}", available.join(", ")))
+                },
+            ),
+            Self::UnknownEnumVariant {
+                enum_name,
+                variant,
+                available,
+                ..
+            } => (
+                "Unknown enum variant".to_string(),
+                format!("Enum `{enum_name}` has no variant `{variant}`."),
+                if available.is_empty() {
+                    Some(format!(
+                        "Check the spelling — variants are defined in enum `{enum_name}`."
+                    ))
+                } else {
+                    Some(format!("Available variants: {}", available.join(", ")))
                 },
             ),
             Self::UnaryTypeMismatch { op, found, .. } => (

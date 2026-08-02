@@ -143,6 +143,7 @@ impl Analyzer {
             ("first", 1),
             ("last", 1),
             ("contains", 2),
+            ("slice", 3),
             ("toInt", 1),
             ("toFloat", 1),
             ("abs", 1),

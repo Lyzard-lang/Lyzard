@@ -123,6 +123,42 @@ impl ResolvedType {
             return true;
         }
 
+        // Generic type families (Option<T>, Result<T, E>, List<T>, ...) are
+        // compatible when the names match; type args are checked loosely —
+        // Unknown/Error act as wildcards and missing args are treated as
+        // unknown (e.g. `Result.Ok(1)` is assignable to `Result<int, str>`)
+        if let (Self::Generic { name: n1, args: a1 }, Self::Generic { name: n2, args: a2 }) = (self, other)
+        {
+            if n1 == n2 {
+                let max = a1.len().max(a2.len());
+                let compatible = (0..max).all(|i| {
+                    let x = a1.get(i).cloned().unwrap_or(Self::Unknown);
+                    let y = a2.get(i).cloned().unwrap_or(Self::Unknown);
+                    x.is_error() || y.is_error() || x == y
+                });
+                if compatible {
+                    return true;
+                }
+            }
+        }
+
+        // `List` and `List<T>` describe the same user type — the checker uses
+        // `Struct(name)` for struct literals/impls and `Generic{name, args}` for
+        // annotated generics, so the two representations must interoperate.
+        if let (Self::Struct(s1), Self::Generic { name, .. }) = (self, other) {
+            if s1 == name { return true; }
+        }
+        if let (Self::Generic { name, .. }, Self::Struct(s1)) = (self, other) {
+            if s1 == name { return true; }
+        }
+
+        // Arrays are compatible when their inner types are (or are unknown)
+        if let (Self::Array(a1), Self::Array(a2)) = (self, other) {
+            if a1.is_error() || a2.is_error() || a1 == a2 {
+                return true;
+            }
+        }
+
         false
     }
 
@@ -134,6 +170,10 @@ impl ResolvedType {
             (Self::Int,   Self::Float) => Some(Self::Float), // int + float = float
             (Self::Float, Self::Int)   => Some(Self::Float),
             (Self::Str,   Self::Str)   => Some(Self::Str),   // str + str = str (concat)
+            (Self::Str,   Self::Char)  => Some(Self::Str),   // str + scalar = str (interpreter stringifies)
+            (Self::Str,   Self::Int)   => Some(Self::Str),
+            (Self::Str,   Self::Float) => Some(Self::Str),
+            (Self::Str,   Self::Bool)  => Some(Self::Str),
             _ => None,
         }
     }
