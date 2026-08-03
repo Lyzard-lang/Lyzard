@@ -3,6 +3,7 @@ pub mod codegen;
 pub mod interpreter;
 pub mod lexer;
 pub mod memory;
+pub mod package;
 pub mod parser;
 pub mod stdlib;
 pub mod types;
