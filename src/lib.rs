@@ -2,6 +2,7 @@ pub mod analyzer;
 pub mod codegen;
 pub mod interpreter;
 pub mod lexer;
+pub mod lsp;
 pub mod memory;
 pub mod package;
 pub mod parser;
