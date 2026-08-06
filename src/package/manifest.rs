@@ -47,9 +47,9 @@ impl Manifest {
             .ok_or_else(|| ManifestError::MissingField("package".to_string(), "name".to_string()))?
             .clone();
 
-        let version_str = package
-            .get("version")
-            .ok_or_else(|| ManifestError::MissingField("package".to_string(), "version".to_string()))?;
+        let version_str = package.get("version").ok_or_else(|| {
+            ManifestError::MissingField("package".to_string(), "version".to_string())
+        })?;
         let version = Version::parse(version_str)
             .map_err(|e| ManifestError::InvalidValue("version".to_string(), e.to_string()))?;
 
@@ -116,7 +116,9 @@ impl Manifest {
 
 /// Minimal TOML parser: splits into [section] -> { key: raw_value_string }
 /// Handles: comments (#), quoted strings, bare arrays like ["a", "b"]
-fn parse_toml_sections(source: &str) -> Result<HashMap<String, HashMap<String, String>>, ManifestError> {
+fn parse_toml_sections(
+    source: &str,
+) -> Result<HashMap<String, HashMap<String, String>>, ManifestError> {
     let mut sections: HashMap<String, HashMap<String, String>> = HashMap::new();
     let mut current_section = String::new();
 
@@ -141,7 +143,10 @@ fn parse_toml_sections(source: &str) -> Result<HashMap<String, HashMap<String, S
                 .or_default()
                 .insert(key, cleaned);
         } else if !current_section.is_empty() {
-            return Err(ManifestError::ParseError(format!("malformed line: '{}'", line)));
+            return Err(ManifestError::ParseError(format!(
+                "malformed line: '{}'",
+                line
+            )));
         }
     }
 
@@ -182,7 +187,9 @@ fn parse_toml_array(s: &str) -> Vec<String> {
     }
 }
 
-fn parse_dependency_table(table: &HashMap<String, String>) -> Result<HashMap<String, VersionReq>, ManifestError> {
+fn parse_dependency_table(
+    table: &HashMap<String, String>,
+) -> Result<HashMap<String, VersionReq>, ManifestError> {
     let mut deps = HashMap::new();
     for (name, version_str) in table {
         let req = VersionReq::parse(version_str)
@@ -285,7 +292,8 @@ test_framework = "0.3.0"
 
     #[test]
     fn test_parse_ignores_comments() {
-        let toml = "# this is a comment\n[package]\nname = \"x\" # inline note\nversion = \"1.0.0\"";
+        let toml =
+            "# this is a comment\n[package]\nname = \"x\" # inline note\nversion = \"1.0.0\"";
         let m = Manifest::parse(toml).unwrap();
         assert_eq!(m.name, "x");
     }

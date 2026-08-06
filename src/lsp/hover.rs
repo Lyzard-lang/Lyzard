@@ -107,7 +107,8 @@ fn hover_in_block(block: &Block, line: usize, col: usize) -> Option<String> {
 }
 
 fn type_to_string(t: Option<&TypeExpr>) -> String {
-    t.map(type_expr_to_string).unwrap_or_else(|| "unknown".to_string())
+    t.map(type_expr_to_string)
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn type_expr_to_string(t: &TypeExpr) -> String {
@@ -118,7 +119,11 @@ fn type_expr_to_string(t: &TypeExpr) -> String {
         TypeExpr::Generic(g) => format!(
             "{}<{}>",
             g.name,
-            g.args.iter().map(type_expr_to_string).collect::<Vec<_>>().join(", ")
+            g.args
+                .iter()
+                .map(type_expr_to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
         _ => "?".to_string(),
     }
@@ -133,10 +138,13 @@ mod hover_tests {
     fn hover_at(src: &str, line: u64, character: u64) -> Json {
         let mut store = DocumentStore::new();
         store.open("file:///t.lyz".to_string(), src.to_string(), 1);
-        handle_hover(&store, &json!({
-            "textDocument": { "uri": "file:///t.lyz" },
-            "position": { "line": line, "character": character },
-        }))
+        handle_hover(
+            &store,
+            &json!({
+                "textDocument": { "uri": "file:///t.lyz" },
+                "position": { "line": line, "character": character },
+            }),
+        )
     }
 
     #[test]
@@ -151,7 +159,10 @@ mod hover_tests {
     fn test_hover_returns_markdown_shape() {
         let result = hover_at("fn add(a: int, b: int) -> int { return a + b }", 0, 4);
         assert_eq!(result["contents"]["kind"], "markdown");
-        assert!(result["contents"]["value"].as_str().unwrap().contains("fn add"));
+        assert!(result["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("fn add"));
     }
 
     #[test]
@@ -165,10 +176,13 @@ mod hover_tests {
     #[test]
     fn test_hover_missing_document_returns_null() {
         let store = DocumentStore::new();
-        let result = handle_hover(&store, &json!({
-            "textDocument": { "uri": "file:///missing.lyz" },
-            "position": { "line": 0, "character": 0 },
-        }));
+        let result = handle_hover(
+            &store,
+            &json!({
+                "textDocument": { "uri": "file:///missing.lyz" },
+                "position": { "line": 0, "character": 0 },
+            }),
+        );
         assert_eq!(result, Json::Null);
     }
 
@@ -184,7 +198,7 @@ mod hover_tests {
         assert!(span_contains(&span, 3, 10));
         assert!(span_contains(&span, 3, 12));
         assert!(!span_contains(&span, 4, 10)); // wrong line
-        assert!(!span_contains(&span, 3, 5));  // before the span starts
+        assert!(!span_contains(&span, 3, 5)); // before the span starts
     }
 
     #[test]

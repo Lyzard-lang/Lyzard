@@ -1,11 +1,11 @@
+use super::PreludeLoader;
+use crate::analyzer::Analyzer;
 /// High-level convenience wrapper: load the prelude and a user file,
 /// and run the FULL compilation pipeline (lex -> parse -> analyze ->
 /// type-check) in one call. Used by the `lyzard run`/`lyzard build` CLI.
 use crate::lexer::Lexer;
-use crate::parser::{Parser, ast::Program};
-use crate::analyzer::Analyzer;
+use crate::parser::{ast::Program, Parser};
 use crate::types::TypeChecker;
-use super::PreludeLoader;
 
 pub struct CompiledProgram {
     pub program: Program,
@@ -20,8 +20,8 @@ pub fn compile_with_prelude(
     let prelude = PreludeLoader::load(std_dir)?;
     let full_source = prelude.build_full_source(user_source, user_filename);
 
-    let tokens = Lexer::tokenize(&full_source, user_filename)
-        .map_err(|e| e.format(&full_source))?;
+    let tokens =
+        Lexer::tokenize(&full_source, user_filename).map_err(|e| e.format(&full_source))?;
 
     let (program, parse_errs) = Parser::new(tokens, user_filename, &full_source)
         .parse()
@@ -40,5 +40,8 @@ pub fn compile_with_prelude(
         return Err(type_errs.format_all(&full_source));
     }
 
-    Ok(CompiledProgram { program, full_source })
+    Ok(CompiledProgram {
+        program,
+        full_source,
+    })
 }

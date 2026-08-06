@@ -105,14 +105,18 @@ pub fn read_message<R: BufRead>(reader: &mut R) -> io::Result<Option<RpcRequest>
         // UTF-8 JSON, so we don't need to branch on them
     }
 
-    let length = content_length
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing Content-Length header"))?;
+    let length = content_length.ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "missing Content-Length header")
+    })?;
 
     let mut buf = vec![0u8; length];
     reader.read_exact(&mut buf)?;
 
     let request: RpcRequest = serde_json::from_slice(&buf).map_err(|e| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("invalid JSON-RPC body: {}", e))
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid JSON-RPC body: {}", e),
+        )
     })?;
 
     Ok(Some(request))
@@ -129,8 +133,8 @@ pub fn write_message<W: Write, T: Serialize>(writer: &mut W, message: &T) -> io:
 #[cfg(test)]
 mod protocol_tests {
     use super::*;
-    use std::io::Cursor;
     use serde_json::json;
+    use std::io::Cursor;
 
     #[test]
     fn test_read_message_basic() {
@@ -203,7 +207,10 @@ mod protocol_tests {
 
     #[test]
     fn test_notification_serializes_without_id() {
-        let notif = RpcNotification::new("textDocument/publishDiagnostics", json!({"uri": "file:///x"}));
+        let notif = RpcNotification::new(
+            "textDocument/publishDiagnostics",
+            json!({"uri": "file:///x"}),
+        );
         let s = serde_json::to_string(&notif).unwrap();
         assert!(!s.contains("\"id\""));
         assert!(s.contains("publishDiagnostics"));

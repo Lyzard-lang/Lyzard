@@ -6,13 +6,15 @@ pub const HEADER_SIZE: usize = 16;
 /// so the destructor knows how to recursively free nested references
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeTag {
-    Str      = 0,
-    Array    = 1,
-    Struct   = 2, // generic struct — layout looked up via a separate descriptor table
+    Str = 0,
+    Array = 1,
+    Struct = 2, // generic struct — layout looked up via a separate descriptor table
 }
 
 impl TypeTag {
-    pub fn as_i64(&self) -> i64 { *self as i64 }
+    pub fn as_i64(&self) -> i64 {
+        *self as i64
+    }
 
     pub fn from_i64(val: i64) -> Option<Self> {
         match val {
@@ -46,9 +48,15 @@ mod header_tests {
 
     #[test]
     fn test_type_tag_roundtrip() {
-        assert_eq!(TypeTag::from_i64(TypeTag::Str.as_i64()),    Some(TypeTag::Str));
-        assert_eq!(TypeTag::from_i64(TypeTag::Array.as_i64()),  Some(TypeTag::Array));
-        assert_eq!(TypeTag::from_i64(TypeTag::Struct.as_i64()), Some(TypeTag::Struct));
+        assert_eq!(TypeTag::from_i64(TypeTag::Str.as_i64()), Some(TypeTag::Str));
+        assert_eq!(
+            TypeTag::from_i64(TypeTag::Array.as_i64()),
+            Some(TypeTag::Array)
+        );
+        assert_eq!(
+            TypeTag::from_i64(TypeTag::Struct.as_i64()),
+            Some(TypeTag::Struct)
+        );
     }
 
     #[test]

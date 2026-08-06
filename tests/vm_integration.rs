@@ -1,6 +1,6 @@
 use lyzard::lexer::Lexer;
 use lyzard::parser::Parser;
-use lyzard::vm::{VM, compiler::Compiler};
+use lyzard::vm::{compiler::Compiler, VM};
 
 fn run_ok(src: &str) -> lyzard::interpreter::value::Value {
     let t = Lexer::tokenize(src, "i.lyz").unwrap();
@@ -47,17 +47,21 @@ fn test_print_captured() {
 #[test]
 fn test_let_and_use() {
     // let x = 10 then use x
-    run_ok("let x = 10
-let y = x + 5");
+    run_ok(
+        "let x = 10
+let y = x + 5",
+    );
 }
 
 #[test]
 fn test_array_operations() {
-    run_ok(r#"
+    run_ok(
+        r#"
 let nums = [1, 2, 3]
 let first = nums[0]
 let last  = nums[-1]
-"#);
+"#,
+    );
 }
 
 #[test]
@@ -74,67 +78,79 @@ fn test_comparison_ops() {
 
 #[test]
 fn test_while_loop() {
-    run_ok(r#"
+    run_ok(
+        r#"
 fn f() {
     let mut i = 0
     while i < 5 {
         i = i + 1
     }
 }
-"#);
+"#,
+    );
 }
 
 #[test]
 fn test_for_loop() {
-    run_ok(r#"
+    run_ok(
+        r#"
 fn f() {
     let mut sum = 0
     for i in [1, 2, 3, 4, 5] {
         sum = sum + i
     }
 }
-"#);
+"#,
+    );
 }
 
 #[test]
 fn test_if_else() {
-    run_ok(r#"
+    run_ok(
+        r#"
 fn abs_val(n: int) -> int {
     if n < 0 { return n * -1 }
     else { return n }
 }
 fn main() { abs_val(-5) abs_val(5) }
-"#);
+"#,
+    );
 }
 
 #[test]
 fn test_recursive_fibonacci() {
-    run_ok(r#"
+    run_ok(
+        r#"
 fn fib(n: int) -> int {
     if n <= 1 { return n }
     return fib(n - 1) + fib(n - 2)
 }
 fn main() { fib(10) }
-"#);
+"#,
+    );
 }
 
 #[test]
 fn test_struct() {
-    run_ok(r#"
+    run_ok(
+        r#"
 struct Point { x: float, y: float }
 fn main() {
     let p = Point { x: 3.0, y: 4.0 }
     let px = p.x
 }
-"#);
+"#,
+    );
 }
 
 #[test]
 fn test_forward_reference() {
-    run_ok(r#"
+    run_ok(
+        r#"
 fn main() { let r = helper(5) }
 fn helper(x: int) -> int { return x * 2 }
-"#);
+"#,
+    );
 }
 
 #[test]

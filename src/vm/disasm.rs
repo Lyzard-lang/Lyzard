@@ -36,8 +36,8 @@ pub fn print_chunk(chunk: &Chunk) {
 #[cfg(test)]
 mod disasm_tests {
     use super::*;
-    use crate::vm::opcode::{Chunk, Opcode};
     use crate::interpreter::value::Value;
+    use crate::vm::opcode::{Chunk, Opcode};
 
     #[test]
     fn test_disassemble_basic() {
@@ -68,7 +68,7 @@ mod disasm_tests {
         let mut chunk = Chunk::new("test");
         chunk.emit(Opcode::PushInt(1), 1);
         chunk.emit(Opcode::PushInt(2), 3);
-        chunk.emit(Opcode::Add,        3);
+        chunk.emit(Opcode::Add, 3);
         let out = disassemble(&chunk);
         // Line 1 appears once, then | for same-line continuation
         assert!(out.contains("   1"));

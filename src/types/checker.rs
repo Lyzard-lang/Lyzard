@@ -130,9 +130,7 @@ impl TypeChecker {
             TypeExpr::Optional(inner, _) => {
                 ResolvedType::Optional(Box::new(self.resolve_type(inner)))
             }
-            TypeExpr::Array(inner, _) => {
-                ResolvedType::Array(Box::new(self.resolve_type(inner)))
-            }
+            TypeExpr::Array(inner, _) => ResolvedType::Array(Box::new(self.resolve_type(inner))),
             TypeExpr::Tuple(types, _) => {
                 ResolvedType::Tuple(types.iter().map(|t| self.resolve_type(t)).collect())
             }
@@ -155,12 +153,14 @@ impl TypeChecker {
 
     pub fn check_declaration(&mut self, decl: &Declaration) {
         match decl {
-            Declaration::Function(f)  => self.check_fn(f),
-            Declaration::Let(l)       => self.check_let(l),
-            Declaration::Const(c)     => self.check_const(c),
-            Declaration::Impl(i)      => self.check_impl(i),
-            Declaration::Statement(s) => { self.check_statement(s); }
-            _                         => {}
+            Declaration::Function(f) => self.check_fn(f),
+            Declaration::Let(l) => self.check_let(l),
+            Declaration::Const(c) => self.check_const(c),
+            Declaration::Impl(i) => self.check_impl(i),
+            Declaration::Statement(s) => {
+                self.check_statement(s);
+            }
+            _ => {}
         }
     }
 
@@ -169,7 +169,10 @@ impl TypeChecker {
 
         // Register generic params
         for generic in &decl.generics {
-            self.env.define(generic.name.clone(), ResolvedType::TypeParam(generic.name.clone()));
+            self.env.define(
+                generic.name.clone(),
+                ResolvedType::TypeParam(generic.name.clone()),
+            );
         }
 
         // Register params
@@ -180,14 +183,18 @@ impl TypeChecker {
                 }
                 continue;
             }
-            let ty = param.param_type.as_ref()
+            let ty = param
+                .param_type
+                .as_ref()
                 .map(|t| self.resolve_type(t))
                 .unwrap_or(ResolvedType::Unknown);
             self.env.define(param.name.clone(), ty);
         }
 
         // Set return type context
-        let return_type = decl.return_type.as_ref()
+        let return_type = decl
+            .return_type
+            .as_ref()
             .map(|t| self.resolve_type(t))
             .unwrap_or(ResolvedType::Void);
         self.env.enter_function(return_type.clone());
@@ -216,8 +223,12 @@ impl TypeChecker {
         if let Some(annotation) = &decl.type_annotation {
             let declared_ty = self.resolve_type(annotation);
             if !declared_ty.is_assignable_from(&value_ty) && !value_ty.is_error() {
-                self.type_mismatch(declared_ty.clone(), value_ty.clone(), decl.span,
-                    &format!("variable `{}` declaration", decl.name));
+                self.type_mismatch(
+                    declared_ty.clone(),
+                    value_ty.clone(),
+                    decl.span,
+                    &format!("variable `{}` declaration", decl.name),
+                );
             }
             self.env.define(decl.name.clone(), declared_ty);
         } else {
@@ -231,7 +242,12 @@ impl TypeChecker {
         if let Some(annotation) = &decl.type_annotation {
             let declared_ty = self.resolve_type(annotation);
             if !declared_ty.is_assignable_from(&value_ty) && !value_ty.is_error() {
-                self.type_mismatch(declared_ty.clone(), value_ty, decl.span, "constant declaration");
+                self.type_mismatch(
+                    declared_ty.clone(),
+                    value_ty,
+                    decl.span,
+                    "constant declaration",
+                );
             }
             self.env.define(decl.name.clone(), declared_ty);
         } else {
@@ -254,17 +270,19 @@ impl TypeChecker {
 
     pub fn check_statement(&mut self, stmt: &Statement) {
         match stmt {
-            Statement::Let(l)       => self.check_let(l),
-            Statement::Const(c)     => self.check_const(c),
-            Statement::Return(r)    => self.check_return(r),
-            Statement::If(i)        => self.check_if(i),
-            Statement::While(w)     => self.check_while(w),
-            Statement::For(f)       => self.check_for(f),
-            Statement::Loop(l)      => self.check_loop_stmt(l),
-            Statement::Match(m)     => self.check_match(m),
-            Statement::Block(b)     => self.check_block(b),
-            Statement::Expression(e)=> { self.infer_expr(&e.expr); }
-            Statement::Spawn(s)     => self.check_block(&s.body),
+            Statement::Let(l) => self.check_let(l),
+            Statement::Const(c) => self.check_const(c),
+            Statement::Return(r) => self.check_return(r),
+            Statement::If(i) => self.check_if(i),
+            Statement::While(w) => self.check_while(w),
+            Statement::For(f) => self.check_for(f),
+            Statement::Loop(l) => self.check_loop_stmt(l),
+            Statement::Match(m) => self.check_match(m),
+            Statement::Block(b) => self.check_block(b),
+            Statement::Expression(e) => {
+                self.infer_expr(&e.expr);
+            }
+            Statement::Spawn(s) => self.check_block(&s.body),
             Statement::Break(_) | Statement::Continue(_) => {}
         }
     }
@@ -278,8 +296,16 @@ impl TypeChecker {
     }
 
     fn check_return(&mut self, stmt: &ReturnStmt) {
-        let expected = self.env.expected_return_type().cloned().unwrap_or(ResolvedType::Void);
-        let found    = stmt.value.as_ref().map(|e| self.infer_expr(e)).unwrap_or(ResolvedType::Void);
+        let expected = self
+            .env
+            .expected_return_type()
+            .cloned()
+            .unwrap_or(ResolvedType::Void);
+        let found = stmt
+            .value
+            .as_ref()
+            .map(|e| self.infer_expr(e))
+            .unwrap_or(ResolvedType::Void);
 
         if !expected.is_assignable_from(&found) && !found.is_error() && !expected.is_error() {
             self.type_mismatch(expected, found, stmt.span, "return statement");
@@ -290,8 +316,10 @@ impl TypeChecker {
         let cond_ty = self.infer_expr(&stmt.condition);
         if !cond_ty.is_error() && !cond_ty.is_bool() {
             self.push_error(TypeError::NonBoolCondition {
-                found: cond_ty, span: stmt.condition.span(),
-                file: self.file.clone(), context: "if".to_string(),
+                found: cond_ty,
+                span: stmt.condition.span(),
+                file: self.file.clone(),
+                context: "if".to_string(),
             });
         }
         self.check_block(&stmt.then_branch);
@@ -299,21 +327,27 @@ impl TypeChecker {
             let cond = self.infer_expr(&branch.condition);
             if !cond.is_error() && !cond.is_bool() {
                 self.push_error(TypeError::NonBoolCondition {
-                    found: cond, span: branch.condition.span(),
-                    file: self.file.clone(), context: "else if".to_string(),
+                    found: cond,
+                    span: branch.condition.span(),
+                    file: self.file.clone(),
+                    context: "else if".to_string(),
                 });
             }
             self.check_block(&branch.body);
         }
-        if let Some(else_b) = &stmt.else_branch { self.check_block(else_b); }
+        if let Some(else_b) = &stmt.else_branch {
+            self.check_block(else_b);
+        }
     }
 
     fn check_while(&mut self, stmt: &WhileStmt) {
         let cond_ty = self.infer_expr(&stmt.condition);
         if !cond_ty.is_error() && !cond_ty.is_bool() {
             self.push_error(TypeError::NonBoolCondition {
-                found: cond_ty, span: stmt.condition.span(),
-                file: self.file.clone(), context: "while".to_string(),
+                found: cond_ty,
+                span: stmt.condition.span(),
+                file: self.file.clone(),
+                context: "while".to_string(),
             });
         }
         self.env.enter_loop();
@@ -341,7 +375,9 @@ impl TypeChecker {
         self.env.enter_loop();
         self.env.push_scope();
         self.env.define(stmt.variable.clone(), elem_ty);
-        for s in &stmt.body.statements { self.check_statement(s); }
+        for s in &stmt.body.statements {
+            self.check_statement(s);
+        }
         self.env.pop_scope();
         self.env.exit_loop();
     }
@@ -359,7 +395,9 @@ impl TypeChecker {
             // Bind pattern variables — type them as Unknown for now
             self.bind_pattern_types(&arm.pattern);
             match &arm.body {
-                MatchBody::Expr(e)  => { self.infer_expr(e); }
+                MatchBody::Expr(e) => {
+                    self.infer_expr(e);
+                }
                 MatchBody::Block(b) => self.check_block(b),
             }
             self.env.pop_scope();
@@ -419,7 +457,8 @@ impl TypeChecker {
                     return ty;
                 }
                 let callee_type = self.infer_expr(&c.callee);
-                let arg_types: Vec<ResolvedType> = c.args.iter().map(|a| self.infer_expr(&a.value)).collect();
+                let arg_types: Vec<ResolvedType> =
+                    c.args.iter().map(|a| self.infer_expr(&a.value)).collect();
                 self.infer_call(callee_type, arg_types, &c.callee, c.span)
             }
 
@@ -446,7 +485,8 @@ impl TypeChecker {
                             found: ty,
                             span: elem.span(),
                             file: self.file.clone(),
-                            context: "array literal — all elements must have the same type".to_string(),
+                            context: "array literal — all elements must have the same type"
+                                .to_string(),
                         });
                     }
                 }
@@ -459,14 +499,18 @@ impl TypeChecker {
                 if let Some(fields) = self.struct_fields.get(&s.name).cloned() {
                     for (field_name, field_val) in &s.fields {
                         let val_ty = self.infer_expr(field_val);
-                        if let Some((_, expected_ty)) = fields.iter().find(|(n, _)| n == field_name) {
+                        if let Some((_, expected_ty)) = fields.iter().find(|(n, _)| n == field_name)
+                        {
                             if !expected_ty.is_assignable_from(&val_ty) && !val_ty.is_error() {
                                 self.push_error(TypeError::TypeMismatch {
                                     expected: expected_ty.clone(),
                                     found: val_ty,
                                     span: field_val.span(),
                                     file: self.file.clone(),
-                                    context: format!("field `{}` of struct `{}`", field_name, s.name),
+                                    context: format!(
+                                        "field `{}` of struct `{}`",
+                                        field_name, s.name
+                                    ),
                                 });
                             }
                         } else {
@@ -524,7 +568,10 @@ impl TypeChecker {
             Expr::Assign(a) => {
                 let val_ty = self.infer_expr(&a.value);
                 let target_ty = self.infer_expr(&a.target);
-                if !target_ty.is_error() && !val_ty.is_error() && !target_ty.is_assignable_from(&val_ty) {
+                if !target_ty.is_error()
+                    && !val_ty.is_error()
+                    && !target_ty.is_assignable_from(&val_ty)
+                {
                     self.type_mismatch(target_ty, val_ty.clone(), a.span, "assignment");
                 }
                 val_ty
@@ -618,7 +665,13 @@ impl TypeChecker {
         }
     }
 
-    fn infer_binary(&mut self, op: &BinaryOp, left: ResolvedType, right: ResolvedType, span: Span) -> ResolvedType {
+    fn infer_binary(
+        &mut self,
+        op: &BinaryOp,
+        left: ResolvedType,
+        right: ResolvedType,
+        span: Span,
+    ) -> ResolvedType {
         if left.is_error() || right.is_error() {
             return ResolvedType::Error;
         }
@@ -646,7 +699,8 @@ impl TypeChecker {
                         found: right,
                         span,
                         file: self.file.clone(),
-                        context: "equality comparison — both sides must have the same type".to_string(),
+                        context: "equality comparison — both sides must have the same type"
+                            .to_string(),
                     });
                 }
                 ResolvedType::Bool
@@ -714,7 +768,13 @@ impl TypeChecker {
         }
     }
 
-    fn infer_call(&mut self, callee_type: ResolvedType, arg_types: Vec<ResolvedType>, callee: &Expr, span: Span) -> ResolvedType {
+    fn infer_call(
+        &mut self,
+        callee_type: ResolvedType,
+        arg_types: Vec<ResolvedType>,
+        callee: &Expr,
+        span: Span,
+    ) -> ResolvedType {
         if callee_type.is_error() {
             return ResolvedType::Error;
         }
@@ -725,7 +785,10 @@ impl TypeChecker {
         };
 
         match callee_type {
-            ResolvedType::Function { params, return_type } => {
+            ResolvedType::Function {
+                params,
+                return_type,
+            } => {
                 // Skip type check for params with Unknown (builtins that accept any type)
                 for (i, (expected, got)) in params.iter().zip(arg_types.iter()).enumerate() {
                     if matches!(expected, ResolvedType::Unknown) {
@@ -756,7 +819,12 @@ impl TypeChecker {
         }
     }
 
-    fn infer_field_access(&mut self, obj_ty: ResolvedType, field: &str, span: Span) -> ResolvedType {
+    fn infer_field_access(
+        &mut self,
+        obj_ty: ResolvedType,
+        field: &str,
+        span: Span,
+    ) -> ResolvedType {
         if obj_ty.is_error() {
             return ResolvedType::Error;
         }
@@ -819,12 +887,17 @@ impl TypeChecker {
     /// object is a registered enum or struct type name. Returns None when
     /// the callee isn't such a call, so normal calls fall through.
     fn try_infer_constructor_call(&mut self, c: &CallExpr) -> Option<ResolvedType> {
-        let Expr::Field(f) = c.callee.as_ref() else { return None; };
-        let Expr::Identifier(obj) = f.object.as_ref() else { return None; };
+        let Expr::Field(f) = c.callee.as_ref() else {
+            return None;
+        };
+        let Expr::Identifier(obj) = f.object.as_ref() else {
+            return None;
+        };
 
         // Enum variant construction: Option.Some(...), Result.Err(...)
         if let Some(_variants) = self.enum_variants.get(&obj.name) {
-            let arg_types: Vec<ResolvedType> = c.args.iter().map(|a| self.infer_expr(&a.value)).collect();
+            let arg_types: Vec<ResolvedType> =
+                c.args.iter().map(|a| self.infer_expr(&a.value)).collect();
             return Some(ResolvedType::Generic {
                 name: obj.name.clone(),
                 args: arg_types,
@@ -873,7 +946,13 @@ impl TypeChecker {
         self.errors.push(err);
     }
 
-    fn type_mismatch(&mut self, expected: ResolvedType, found: ResolvedType, span: Span, context: &str) {
+    fn type_mismatch(
+        &mut self,
+        expected: ResolvedType,
+        found: ResolvedType,
+        span: Span,
+        context: &str,
+    ) {
         self.push_error(TypeError::TypeMismatch {
             expected,
             found,
@@ -1048,7 +1127,10 @@ mod infer_tests {
     }
     #[test]
     fn test_call_correct_args_ok() {
-        assert!(check("fn add(a: int, b: int) -> int { return a + b }\nfn f() { add(1, 2) }").is_empty());
+        assert!(
+            check("fn add(a: int, b: int) -> int { return a + b }\nfn f() { add(1, 2) }")
+                .is_empty()
+        );
     }
     #[test]
     fn test_neg_numeric_ok() {
@@ -1090,39 +1172,58 @@ mod statement_check_tests {
     }
 
     #[test]
-    fn test_return_correct_type()  { assert!(check("fn f() -> int { return 42 }").is_empty()); }
-    #[test]
-    fn test_return_wrong_type()    {
-        let errs = check("fn f() -> int { return \"hello\" }");
-        assert!(!errs.is_empty());
-        assert!(matches!(&errs.0[0], TypeError::TypeMismatch { expected: ResolvedType::Int, found: ResolvedType::Str, .. }));
+    fn test_return_correct_type() {
+        assert!(check("fn f() -> int { return 42 }").is_empty());
     }
     #[test]
-    fn test_if_bool_cond_ok()      { assert!(check("fn f() { if true { } }").is_empty()); }
+    fn test_return_wrong_type() {
+        let errs = check("fn f() -> int { return \"hello\" }");
+        assert!(!errs.is_empty());
+        assert!(matches!(
+            &errs.0[0],
+            TypeError::TypeMismatch {
+                expected: ResolvedType::Int,
+                found: ResolvedType::Str,
+                ..
+            }
+        ));
+    }
     #[test]
-    fn test_if_int_cond_err()      {
+    fn test_if_bool_cond_ok() {
+        assert!(check("fn f() { if true { } }").is_empty());
+    }
+    #[test]
+    fn test_if_int_cond_err() {
         let errs = check("fn f() { if 42 { } }");
         assert!(!errs.is_empty());
         assert!(matches!(&errs.0[0], TypeError::NonBoolCondition { .. }));
     }
     #[test]
-    fn test_while_bool_ok()        { assert!(check("fn f() { while true { } }").is_empty()); }
-    #[test]
-    fn test_while_int_err()        {
-        let errs = check("fn f() { while 1 { } }");
-        assert!(!errs.is_empty());
-        assert!(matches!(&errs.0[0], TypeError::NonBoolCondition { context, .. } if context == "while"));
+    fn test_while_bool_ok() {
+        assert!(check("fn f() { while true { } }").is_empty());
     }
     #[test]
-    fn test_for_array_ok()         { assert!(check("fn f() { for i in [1,2,3] { } }").is_empty()); }
+    fn test_while_int_err() {
+        let errs = check("fn f() { while 1 { } }");
+        assert!(!errs.is_empty());
+        assert!(
+            matches!(&errs.0[0], TypeError::NonBoolCondition { context, .. } if context == "while")
+        );
+    }
     #[test]
-    fn test_for_non_array_err()    {
+    fn test_for_array_ok() {
+        assert!(check("fn f() { for i in [1,2,3] { } }").is_empty());
+    }
+    #[test]
+    fn test_for_non_array_err() {
         let errs = check("fn f() { for i in 42 { } }");
         assert!(!errs.is_empty());
         assert!(matches!(&errs.0[0], TypeError::TypeMismatch { .. }));
     }
     #[test]
-    fn test_let_type_inferred()    { assert!(check("fn f() { let x = 42 let y = x + 1 }").is_empty()); }
+    fn test_let_type_inferred() {
+        assert!(check("fn f() { let x = 42 let y = x + 1 }").is_empty());
+    }
     #[test]
     fn test_for_var_typed_correctly() {
         // After for i in [1,2,3], i should be int
@@ -1131,7 +1232,8 @@ mod statement_check_tests {
     }
     #[test]
     fn test_nested_fn_calls_ok() {
-        let src = "fn double(x: int) -> int { return x * 2 }\nfn main() { let r = double(double(5)) }";
+        let src =
+            "fn double(x: int) -> int { return x * 2 }\nfn main() { let r = double(double(5)) }";
         assert!(check(src).is_empty());
     }
 }

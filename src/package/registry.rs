@@ -58,7 +58,10 @@ impl FakeRegistry {
             dependencies,
             download_url: format!("fake://{}-{}", name, v),
         };
-        self.packages.entry(name.to_string()).or_default().push(meta);
+        self.packages
+            .entry(name.to_string())
+            .or_default()
+            .push(meta);
 
         let key = format!("{}-{}", name, v);
         let file_pairs: Vec<(String, String)> = files
@@ -80,7 +83,11 @@ impl RegistryClient for FakeRegistry {
     }
 
     fn get_metadata(&self, name: &str, version: &Version) -> Option<PackageMetadata> {
-        self.packages.get(name)?.iter().find(|m| &m.version == version).cloned()
+        self.packages
+            .get(name)?
+            .iter()
+            .find(|m| &m.version == version)
+            .cloned()
     }
 
     fn download(&self, name: &str, version: &Version) -> Result<Vec<(String, String)>, String> {

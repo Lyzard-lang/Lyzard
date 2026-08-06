@@ -2,8 +2,8 @@ pub mod checker;
 pub mod env;
 pub mod error;
 
-pub use env::TypeEnvironment;
 pub use checker::TypeChecker;
+pub use env::TypeEnvironment;
 
 /// The resolved type of a LYZARD value
 /// "Resolved" = fully known after type inference, no unknowns
@@ -15,24 +15,24 @@ pub enum ResolvedType {
     Bool,
     Str,
     Char,
-    Void,     // returned by functions with no return value
-    Never,    // function that never returns (panic, infinite loop)
+    Void,  // returned by functions with no return value
+    Never, // function that never returns (panic, infinite loop)
 
     // ── OPTIONAL ─────────────────────────────────────────────
-    Optional(Box<ResolvedType>),     // T?   e.g. int? = int or null
+    Optional(Box<ResolvedType>), // T?   e.g. int? = int or null
 
     // ── COMPOUND ─────────────────────────────────────────────
-    Array(Box<ResolvedType>),        // [T]  e.g. [int], [str]
-    Tuple(Vec<ResolvedType>),        // (T, U, V)
+    Array(Box<ResolvedType>), // [T]  e.g. [int], [str]
+    Tuple(Vec<ResolvedType>), // (T, U, V)
 
     // ── USER DEFINED ─────────────────────────────────────────
-    Struct(String),                  // struct Point, struct User
-    Enum(String),                    // enum Color, enum Status
+    Struct(String), // struct Point, struct User
+    Enum(String),   // enum Color, enum Status
 
     // ── GENERIC ──────────────────────────────────────────────
     Generic {
-        name: String,                // "Result", "Vec", "Option"
-        args: Vec<ResolvedType>,     // [int, str] for Result<int, str>
+        name: String,            // "Result", "Vec", "Option"
+        args: Vec<ResolvedType>, // [int, str] for Result<int, str>
     },
 
     // ── FUNCTION ─────────────────────────────────────────────
@@ -42,39 +42,64 @@ pub enum ResolvedType {
     },
 
     // ── TYPE PARAMETER ───────────────────────────────────────
-    TypeParam(String),               // T in fn max<T>(a: T, b: T)
+    TypeParam(String), // T in fn max<T>(a: T, b: T)
 
     // ── SPECIAL ──────────────────────────────────────────────
-    Unknown,    // type not yet inferred (inference in progress)
-    Error,      // a type error occurred — avoid cascading errors
+    Unknown, // type not yet inferred (inference in progress)
+    Error,   // a type error occurred — avoid cascading errors
 }
 
 impl ResolvedType {
     /// Human-readable name for error messages
     pub fn name(&self) -> String {
         match self {
-            Self::Int               => "int".to_string(),
-            Self::Float             => "float".to_string(),
-            Self::Bool              => "bool".to_string(),
-            Self::Str               => "str".to_string(),
-            Self::Char              => "char".to_string(),
-            Self::Void              => "void".to_string(),
-            Self::Never             => "never".to_string(),
-            Self::Optional(inner)   => format!("{}?", inner.name()),
-            Self::Array(inner)      => format!("[{}]", inner.name()),
-            Self::Tuple(types)      => format!("({})", types.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ")),
-            Self::Struct(name)      => name.clone(),
-            Self::Enum(name)        => name.clone(),
+            Self::Int => "int".to_string(),
+            Self::Float => "float".to_string(),
+            Self::Bool => "bool".to_string(),
+            Self::Str => "str".to_string(),
+            Self::Char => "char".to_string(),
+            Self::Void => "void".to_string(),
+            Self::Never => "never".to_string(),
+            Self::Optional(inner) => format!("{}?", inner.name()),
+            Self::Array(inner) => format!("[{}]", inner.name()),
+            Self::Tuple(types) => format!(
+                "({})",
+                types
+                    .iter()
+                    .map(|t| t.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::Struct(name) => name.clone(),
+            Self::Enum(name) => name.clone(),
             Self::Generic { name, args } => {
-                if args.is_empty() { name.clone() }
-                else { format!("{}< {} >", name, args.iter().map(|a| a.name()).collect::<Vec<_>>().join(", ")) }
+                if args.is_empty() {
+                    name.clone()
+                } else {
+                    format!(
+                        "{}< {} >",
+                        name,
+                        args.iter().map(|a| a.name()).collect::<Vec<_>>().join(", ")
+                    )
+                }
             }
-            Self::Function { params, return_type } => {
-                format!("fn({}) -> {}", params.iter().map(|p| p.name()).collect::<Vec<_>>().join(", "), return_type.name())
+            Self::Function {
+                params,
+                return_type,
+            } => {
+                format!(
+                    "fn({}) -> {}",
+                    params
+                        .iter()
+                        .map(|p| p.name())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    return_type.name()
+                )
             }
-            Self::TypeParam(name)   => name.clone(),
-            Self::Unknown           => "unknown".to_string(),
-            Self::Error             => "<type error>".to_string(),
+            Self::TypeParam(name) => name.clone(),
+            Self::Unknown => "unknown".to_string(),
+            Self::Error => "<type error>".to_string(),
         }
     }
 
@@ -94,19 +119,29 @@ impl ResolvedType {
     }
 
     /// Is this an int?
-    pub fn is_int(&self) -> bool { matches!(self, Self::Int) }
+    pub fn is_int(&self) -> bool {
+        matches!(self, Self::Int)
+    }
 
     /// Is this a bool?
-    pub fn is_bool(&self) -> bool { matches!(self, Self::Bool) }
+    pub fn is_bool(&self) -> bool {
+        matches!(self, Self::Bool)
+    }
 
     /// Is this a str?
-    pub fn is_str(&self) -> bool { matches!(self, Self::Str) }
+    pub fn is_str(&self) -> bool {
+        matches!(self, Self::Str)
+    }
 
     /// Can the value of type `other` be used where `self` is expected?
     /// Handles int→float coercion and Error passthrough
     pub fn is_assignable_from(&self, other: &ResolvedType) -> bool {
-        if other.is_error() { return true; } // don't cascade errors
-        if self == other { return true; }
+        if other.is_error() {
+            return true;
+        } // don't cascade errors
+        if self == other {
+            return true;
+        }
 
         // int is assignable to float (implicit coercion)
         if matches!(self, Self::Float) && matches!(other, Self::Int) {
@@ -115,7 +150,9 @@ impl ResolvedType {
 
         // T is assignable to T?
         if let Self::Optional(inner) = self {
-            if inner.as_ref() == other { return true; }
+            if inner.as_ref() == other {
+                return true;
+            }
         }
 
         // null is assignable to T? (Optional)
@@ -127,7 +164,8 @@ impl ResolvedType {
         // compatible when the names match; type args are checked loosely —
         // Unknown/Error act as wildcards and missing args are treated as
         // unknown (e.g. `Result.Ok(1)` is assignable to `Result<int, str>`)
-        if let (Self::Generic { name: n1, args: a1 }, Self::Generic { name: n2, args: a2 }) = (self, other)
+        if let (Self::Generic { name: n1, args: a1 }, Self::Generic { name: n2, args: a2 }) =
+            (self, other)
         {
             if n1 == n2 {
                 let max = a1.len().max(a2.len());
@@ -146,10 +184,14 @@ impl ResolvedType {
         // `Struct(name)` for struct literals/impls and `Generic{name, args}` for
         // annotated generics, so the two representations must interoperate.
         if let (Self::Struct(s1), Self::Generic { name, .. }) = (self, other) {
-            if s1 == name { return true; }
+            if s1 == name {
+                return true;
+            }
         }
         if let (Self::Generic { name, .. }, Self::Struct(s1)) = (self, other) {
-            if s1 == name { return true; }
+            if s1 == name {
+                return true;
+            }
         }
 
         // Arrays are compatible when their inner types are (or are unknown)
@@ -165,15 +207,15 @@ impl ResolvedType {
     /// The result type of a binary arithmetic op between two types
     pub fn arithmetic_result(left: &Self, right: &Self) -> Option<Self> {
         match (left, right) {
-            (Self::Int,   Self::Int)   => Some(Self::Int),
+            (Self::Int, Self::Int) => Some(Self::Int),
             (Self::Float, Self::Float) => Some(Self::Float),
-            (Self::Int,   Self::Float) => Some(Self::Float), // int + float = float
-            (Self::Float, Self::Int)   => Some(Self::Float),
-            (Self::Str,   Self::Str)   => Some(Self::Str),   // str + str = str (concat)
-            (Self::Str,   Self::Char)  => Some(Self::Str),   // str + scalar = str (interpreter stringifies)
-            (Self::Str,   Self::Int)   => Some(Self::Str),
-            (Self::Str,   Self::Float) => Some(Self::Str),
-            (Self::Str,   Self::Bool)  => Some(Self::Str),
+            (Self::Int, Self::Float) => Some(Self::Float), // int + float = float
+            (Self::Float, Self::Int) => Some(Self::Float),
+            (Self::Str, Self::Str) => Some(Self::Str), // str + str = str (concat)
+            (Self::Str, Self::Char) => Some(Self::Str), // str + scalar = str (interpreter stringifies)
+            (Self::Str, Self::Int) => Some(Self::Str),
+            (Self::Str, Self::Float) => Some(Self::Str),
+            (Self::Str, Self::Bool) => Some(Self::Str),
             _ => None,
         }
     }
@@ -209,11 +251,11 @@ mod resolved_type_tests {
 
     #[test]
     fn test_name_primitives() {
-        assert_eq!(ResolvedType::Int.name(),   "int");
+        assert_eq!(ResolvedType::Int.name(), "int");
         assert_eq!(ResolvedType::Float.name(), "float");
-        assert_eq!(ResolvedType::Bool.name(),  "bool");
-        assert_eq!(ResolvedType::Str.name(),   "str");
-        assert_eq!(ResolvedType::Void.name(),  "void");
+        assert_eq!(ResolvedType::Bool.name(), "bool");
+        assert_eq!(ResolvedType::Str.name(), "str");
+        assert_eq!(ResolvedType::Void.name(), "void");
     }
 
     #[test]

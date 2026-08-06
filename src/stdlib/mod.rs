@@ -3,11 +3,7 @@ pub mod prelude;
 /// Which stdlib files are auto-imported into every LYZARD program,
 /// in dependency order (core.lyz has no dependencies, collections.lyz
 /// depends on core.lyz's Option<T>, etc.)
-pub const PRELUDE_FILES: &[&str] = &[
-    "std/core.lyz",
-    "std/collections.lyz",
-    "std/string.lyz",
-];
+pub const PRELUDE_FILES: &[&str] = &["std/core.lyz", "std/collections.lyz", "std/string.lyz"];
 
 /// Loads the prelude (the auto-imported stdlib) from disk and prepends it
 /// to every user program before the normal Phase 1-8 pipeline runs.
@@ -23,7 +19,11 @@ impl PreludeLoader {
     pub fn load(std_dir: &str) -> Result<Self, String> {
         let mut sources = Vec::new();
         for file in PRELUDE_FILES {
-            let path = format!("{}/{}", std_dir.trim_end_matches('/'), file.trim_start_matches("std/"));
+            let path = format!(
+                "{}/{}",
+                std_dir.trim_end_matches('/'),
+                file.trim_start_matches("std/")
+            );
             let content = std::fs::read_to_string(&path)
                 .map_err(|e| format!("Failed to load prelude file '{}': {}", path, e))?;
             sources.push((file.to_string(), content));
@@ -63,9 +63,9 @@ impl PreludeLoader {
             format!("fn {}(", name),
             format!("pub fn {}(", name),
         ];
-        self.sources.iter().any(|(_, content)| {
-            patterns.iter().any(|p| content.contains(p.as_str()))
-        })
+        self.sources
+            .iter()
+            .any(|(_, content)| patterns.iter().any(|p| content.contains(p.as_str())))
     }
 }
 
@@ -102,7 +102,10 @@ mod prelude_tests {
         let full = loader.build_full_source("", "u.lyz");
         let core_pos = full.find("prelude: std/core.lyz").unwrap();
         let coll_pos = full.find("prelude: std/collections.lyz").unwrap();
-        assert!(core_pos < coll_pos, "core.lyz must come before collections.lyz (dependency order)");
+        assert!(
+            core_pos < coll_pos,
+            "core.lyz must come before collections.lyz (dependency order)"
+        );
     }
 
     #[test]

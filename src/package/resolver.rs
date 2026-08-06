@@ -120,7 +120,11 @@ impl<'a> Resolver<'a> {
 
     /// Among all requirements accumulated so far for `name`, find the
     /// highest available version satisfying ALL of them simultaneously
-    fn pick_best_version(&self, name: &str, available: &[Version]) -> Result<Version, ResolveError> {
+    fn pick_best_version(
+        &self,
+        name: &str,
+        available: &[Version],
+    ) -> Result<Version, ResolveError> {
         let reqs = self.requirements.get(name).cloned().unwrap_or_default();
 
         let candidate = available
@@ -161,7 +165,10 @@ mod resolver_tests {
                 .into_iter()
                 .map(|(n, r)| (n.to_string(), VersionReq::parse(r).unwrap()))
                 .collect();
-            self.packages.entry(name.to_string()).or_default().push((v, dep_map));
+            self.packages
+                .entry(name.to_string())
+                .or_default()
+                .push((v, dep_map));
             self
         }
     }
@@ -186,7 +193,10 @@ mod resolver_tests {
     fn test_resolve_single_dependency() {
         let index = FakeIndex::new().add("http_client", "1.2.0", vec![]);
         let mut root = HashMap::new();
-        root.insert("http_client".to_string(), VersionReq::parse("^1.0.0").unwrap());
+        root.insert(
+            "http_client".to_string(),
+            VersionReq::parse("^1.0.0").unwrap(),
+        );
 
         let result = Resolver::new(&index).resolve(&root).unwrap();
         assert_eq!(result.len(), 1);
@@ -213,7 +223,10 @@ mod resolver_tests {
             .add("http_client", "1.0.0", vec![("json", "^1.0.0")])
             .add("json", "1.2.0", vec![]);
         let mut root = HashMap::new();
-        root.insert("http_client".to_string(), VersionReq::parse("^1.0.0").unwrap());
+        root.insert(
+            "http_client".to_string(),
+            VersionReq::parse("^1.0.0").unwrap(),
+        );
 
         let result = Resolver::new(&index).resolve(&root).unwrap();
         assert_eq!(result.len(), 2); // http_client AND its transitive dep json
@@ -234,8 +247,14 @@ mod resolver_tests {
             .add("json", "1.6.0", vec![]); // satisfies BOTH ^1.0.0 and ^1.5.0
 
         let mut root = HashMap::new();
-        root.insert("http_client".to_string(), VersionReq::parse("^1.0.0").unwrap());
-        root.insert("json_pretty".to_string(), VersionReq::parse("^2.0.0").unwrap());
+        root.insert(
+            "http_client".to_string(),
+            VersionReq::parse("^1.0.0").unwrap(),
+        );
+        root.insert(
+            "json_pretty".to_string(),
+            VersionReq::parse("^2.0.0").unwrap(),
+        );
 
         let result = Resolver::new(&index).resolve(&root).unwrap();
         let json_pkg = result.iter().find(|p| p.name == "json").unwrap();
@@ -246,7 +265,10 @@ mod resolver_tests {
     fn test_missing_package_errors() {
         let index = FakeIndex::new();
         let mut root = HashMap::new();
-        root.insert("nonexistent".to_string(), VersionReq::parse("1.0.0").unwrap());
+        root.insert(
+            "nonexistent".to_string(),
+            VersionReq::parse("1.0.0").unwrap(),
+        );
 
         let result = Resolver::new(&index).resolve(&root);
         assert!(matches!(result, Err(ResolveError::NotFound(_))));
@@ -275,7 +297,10 @@ mod resolver_tests {
 
         let result = Resolver::new(&index).resolve(&root).unwrap();
         let shared_count = result.iter().filter(|p| p.name == "shared").count();
-        assert_eq!(shared_count, 1, "shared dependency should only appear ONCE in the resolved set");
+        assert_eq!(
+            shared_count, 1,
+            "shared dependency should only appear ONCE in the resolved set"
+        );
     }
 
     #[test]

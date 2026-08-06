@@ -84,7 +84,9 @@ impl IrBuilder {
     /// Refuses to emit if the current block is already terminated
     /// (prevents invalid IR with unreachable code after ret/br)
     pub fn emit(&mut self, line: impl Into<String>) {
-        if self.block_terminated { return; } // silently drop dead code
+        if self.block_terminated {
+            return;
+        } // silently drop dead code
         self.current_fn_lines.push(format!("    {}", line.into()));
     }
 
@@ -96,7 +98,9 @@ impl IrBuilder {
 
     /// Emit a terminator instruction (ret, br) — marks block as closed
     pub fn emit_terminator(&mut self, line: impl Into<String>) {
-        if self.block_terminated { return; }
+        if self.block_terminated {
+            return;
+        }
         self.current_fn_lines.push(format!("    {}", line.into()));
         self.block_terminated = true;
     }
@@ -118,20 +122,29 @@ impl IrBuilder {
     /// Emit: %dest = icmp sgt i64 %a, %b
     pub fn emit_icmp(&mut self, cond: &str, ty: &str, left: &str, right: &str) -> String {
         let dest = self.fresh_reg();
-        self.emit(format!("{} = icmp {} {} {}, {}", dest, cond, ty, left, right));
+        self.emit(format!(
+            "{} = icmp {} {} {}, {}",
+            dest, cond, ty, left, right
+        ));
         dest
     }
 
     /// Emit: %dest = fcmp ogt double %a, %b (for floats)
     pub fn emit_fcmp(&mut self, cond: &str, ty: &str, left: &str, right: &str) -> String {
         let dest = self.fresh_reg();
-        self.emit(format!("{} = fcmp {} {} {}, {}", dest, cond, ty, left, right));
+        self.emit(format!(
+            "{} = fcmp {} {} {}, {}",
+            dest, cond, ty, left, right
+        ));
         dest
     }
 
     /// Emit: br i1 %cond, label %then, label %else
     pub fn emit_cond_branch(&mut self, cond: &str, then_label: &str, else_label: &str) {
-        self.emit_terminator(format!("br i1 {}, label %{}, label %{}", cond, then_label, else_label));
+        self.emit_terminator(format!(
+            "br i1 {}, label %{}, label %{}",
+            cond, then_label, else_label
+        ));
     }
 
     /// Emit: br label %target
@@ -150,8 +163,14 @@ impl IrBuilder {
     }
 
     /// Emit: %dest = call TYPE @fnname(ARGS)
-    pub fn emit_call(&mut self, ret_ty: &str, fn_name: &str, args: &[(String, String)]) -> Option<String> {
-        let args_str = args.iter()
+    pub fn emit_call(
+        &mut self,
+        ret_ty: &str,
+        fn_name: &str,
+        args: &[(String, String)],
+    ) -> Option<String> {
+        let args_str = args
+            .iter()
             .map(|(ty, val)| format!("{} {}", ty, val))
             .collect::<Vec<_>>()
             .join(", ");
@@ -161,7 +180,10 @@ impl IrBuilder {
             None
         } else {
             let dest = self.fresh_reg();
-            self.emit(format!("{} = call {} @{}({})", dest, ret_ty, fn_name, args_str));
+            self.emit(format!(
+                "{} = call {} @{}({})",
+                dest, ret_ty, fn_name, args_str
+            ));
             Some(dest)
         }
     }
@@ -201,7 +223,11 @@ impl IrBuilder {
     }
 }
 
-impl Default for IrBuilder { fn default() -> Self { Self::new() } }
+impl Default for IrBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Escape a string for LLVM's c"..." string literal syntax
 fn escape_llvm_string(s: &str) -> String {
@@ -209,7 +235,7 @@ fn escape_llvm_string(s: &str) -> String {
     for byte in s.bytes() {
         match byte {
             b'\\' => out.push_str("\\5C"),
-            b'"'    => out.push_str("\\22"),
+            b'"' => out.push_str("\\22"),
             0x20..=0x7E => out.push(byte as char), // printable ASCII
             _ => out.push_str(&format!("\\{:02X}", byte)),
         }
@@ -239,7 +265,8 @@ mod ir_builder_tests {
     #[test]
     fn test_start_function_resets_counters() {
         let mut b = IrBuilder::new();
-        b.fresh_reg(); b.fresh_reg();
+        b.fresh_reg();
+        b.fresh_reg();
         b.start_function();
         assert_eq!(b.fresh_reg(), "%t0"); // reset!
     }
@@ -269,7 +296,11 @@ mod ir_builder_tests {
         b.emit_return("i64", "42");
         let lines_before = b.current_fn_lines.len();
         b.emit("this should be dropped".to_string());
-        assert_eq!(b.current_fn_lines.len(), lines_before, "Dead code should not be emitted");
+        assert_eq!(
+            b.current_fn_lines.len(),
+            lines_before,
+            "Dead code should not be emitted"
+        );
     }
 
     #[test]
@@ -286,7 +317,10 @@ mod ir_builder_tests {
     fn test_emit_call_with_return() {
         let mut b = IrBuilder::new();
         b.start_function();
-        let args = vec![("i64".to_string(), "3".to_string()), ("i64".to_string(), "4".to_string())];
+        let args = vec![
+            ("i64".to_string(), "3".to_string()),
+            ("i64".to_string(), "4".to_string()),
+        ];
         let dest = b.emit_call("i64", "lyz_add", &args);
         assert_eq!(dest, Some("%t0".to_string()));
         assert!(b.current_fn_lines[0].contains("call i64 @lyz_add"));
@@ -312,9 +346,9 @@ mod ir_builder_tests {
     fn test_alloca_store_load_roundtrip() {
         let mut b = IrBuilder::new();
         b.start_function();
-        let ptr = b.emit_alloca("i64");          // %t0
+        let ptr = b.emit_alloca("i64"); // %t0
         b.emit_store("i64", "42", &ptr);
-        let loaded = b.emit_load("i64", &ptr);   // %t1
+        let loaded = b.emit_load("i64", &ptr); // %t1
         assert_eq!(loaded, "%t1");
     }
 

@@ -134,7 +134,10 @@ impl TypeError {
 
     pub fn format(&self, source: &str) -> String {
         let span = self.span();
-        let src_line = source.lines().nth(span.line.saturating_sub(1)).unwrap_or("");
+        let src_line = source
+            .lines()
+            .nth(span.line.saturating_sub(1))
+            .unwrap_or("");
         let pointer = format!(
             "{}{}",
             " ".repeat(span.col.saturating_sub(1)),
@@ -161,9 +164,7 @@ impl TypeError {
                 ..
             } => (
                 "Type mismatch".to_string(),
-                format!(
-                    "In {context}: expected `{expected}` but found `{found}`."
-                ),
+                format!("In {context}: expected `{expected}` but found `{found}`."),
                 Some(format!(
                     "Change the value to `{expected}`, or update the type annotation to `{found}`."
                 )),
@@ -174,18 +175,16 @@ impl TypeError {
                 "Invalid operation".to_string(),
                 format!("Cannot apply `{op}` to `{left}` and `{right}`."),
                 Some(match op.as_str() {
-                    "+" => format!(
-                        "`+` works on int+int, float+float, str+str. Got {left} + {right}."
-                    ),
-                    "-" | "*" | "/" => format!(
-                        "`{op}` only works on numeric types. Got `{left}` and `{right}`."
-                    ),
+                    "+" => {
+                        format!("`+` works on int+int, float+float, str+str. Got {left} + {right}.")
+                    }
+                    "-" | "*" | "/" => {
+                        format!("`{op}` only works on numeric types. Got `{left}` and `{right}`.")
+                    }
                     _ => format!("Both operands must be compatible for `{op}`."),
                 }),
             ),
-            Self::NonBoolCondition {
-                found, context, ..
-            } => (
+            Self::NonBoolCondition { found, context, .. } => (
                 "Non-boolean condition".to_string(),
                 format!("`{context}` condition must be `bool`, found `{found}`."),
                 Some(format!(
@@ -218,9 +217,7 @@ impl TypeError {
                 name, actual_type, ..
             } => (
                 "Not a function".to_string(),
-                format!(
-                    "`{name}` is `{actual_type}` and cannot be called with `()`."
-                ),
+                format!("`{name}` is `{actual_type}` and cannot be called with `()`."),
                 Some(format!(
                     "Only functions can be called. `{name}` is `{actual_type}`."
                 )),
@@ -243,9 +240,7 @@ impl TypeError {
             ),
             Self::FieldOnNonStruct { found, field, .. } => (
                 "Field on non-struct".to_string(),
-                format!(
-                    "Cannot access `.{field}` on `{found}` — only structs have fields."
-                ),
+                format!("Cannot access `.{field}` on `{found}` — only structs have fields."),
                 Some("Only struct values have named fields.".to_string()),
             ),
             Self::IndexOnNonArray { found, .. } => (

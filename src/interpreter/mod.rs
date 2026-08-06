@@ -228,8 +228,7 @@ impl Interpreter {
                         if variants.iter().any(|v| v == &mc.method) {
                             if mc.args.len() > 1 {
                                 return Err(RuntimeError::TypeError {
-                                    expected: "enum variant with at most one payload"
-                                        .to_string(),
+                                    expected: "enum variant with at most one payload".to_string(),
                                     got: format!("{} arguments", mc.args.len()),
                                 });
                             }
@@ -295,10 +294,16 @@ impl Interpreter {
                         // Propagate as Return signal so it bubbles up.
                         Ok(Value::Return(Box::new(Value::Err(e))))
                     }
-                    Value::Enum { name, variant, payload }
-                        if name == "Result" && variant == "Err" =>
-                    {
-                        Ok(Value::Return(Box::new(Value::Enum { name, variant, payload })))
+                    Value::Enum {
+                        name,
+                        variant,
+                        payload,
+                    } if name == "Result" && variant == "Err" => {
+                        Ok(Value::Return(Box::new(Value::Enum {
+                            name,
+                            variant,
+                            payload,
+                        })))
                     }
                     other => Ok(other),
                 }
@@ -411,14 +416,16 @@ impl Interpreter {
         span: Span,
     ) -> Result<Value, RuntimeError> {
         match obj {
-            Value::Struct { name, fields } => fields
-                .get(field)
-                .cloned()
-                .ok_or_else(|| RuntimeError::FieldNotFound {
-                    struct_name: name,
-                    field: field.to_string(),
-                    span: Some(span),
-                }),
+            Value::Struct { name, fields } => {
+                fields
+                    .get(field)
+                    .cloned()
+                    .ok_or_else(|| RuntimeError::FieldNotFound {
+                        struct_name: name,
+                        field: field.to_string(),
+                        span: Some(span),
+                    })
+            }
             other => Err(RuntimeError::TypeError {
                 expected: "struct".to_string(),
                 got: other.type_name().to_string(),
@@ -479,7 +486,10 @@ impl Interpreter {
             for step in path.iter().rev() {
                 match step {
                     PathStep::Field(name) => match current {
-                        Value::Struct { name: n, mut fields } => {
+                        Value::Struct {
+                            name: n,
+                            mut fields,
+                        } => {
                             fields.insert(name.clone(), value.clone());
                             current = Value::Struct { name: n, fields };
                         }
@@ -609,10 +619,8 @@ impl Interpreter {
                         .first()
                         .and_then(|a| a.as_str().ok())
                         .unwrap_or_default();
-                    let parts: Vec<Value> = s
-                        .split(sep)
-                        .map(|p| Value::Str(p.to_string()))
-                        .collect();
+                    let parts: Vec<Value> =
+                        s.split(sep).map(|p| Value::Str(p.to_string())).collect();
                     return Ok(Value::Array(parts));
                 }
                 "startsWith" => {
@@ -1480,52 +1488,62 @@ mod call_access_tests {
 
     #[test]
     fn test_fn_call_return_value() {
-        run_ok(r#"
+        run_ok(
+            r#"
 fn double(x: int) -> int { return x * 2 }
 fn main() { let r = double(5) }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn test_recursive_fn() {
-        run_ok(r#"
+        run_ok(
+            r#"
 fn fib(n: int) -> int {
     if n <= 1 { return n }
     return fib(n - 1) + fib(n - 2)
 }
 fn main() { fib(10) }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn test_stack_overflow() {
-        let err = run_err(r#"
+        let err = run_err(
+            r#"
 fn forever() -> int { return forever() }
 fn main() { forever() }
-"#);
+"#,
+        );
         assert!(matches!(err, RuntimeError::StackOverflow { .. }));
     }
 
     #[test]
     fn test_struct_field_access() {
-        run_ok(r#"
+        run_ok(
+            r#"
 struct Point { x: float, y: float }
 fn main() {
     let p = Point { x: 3.0, y: 4.0 }
     print(p.x)
 }
-"#);
+"#,
+        );
     }
 
     #[test]
     fn test_field_not_found() {
-        let err = run_err(r#"
+        let err = run_err(
+            r#"
 struct Point { x: float, y: float }
 fn main() {
     let p = Point { x: 1.0, y: 2.0 }
     print(p.z)
 }
-"#);
+"#,
+        );
         assert!(matches!(err, RuntimeError::FieldNotFound { field, .. } if field == "z"));
     }
 
@@ -1537,7 +1555,10 @@ fn main() {
     #[test]
     fn test_index_out_of_bounds() {
         let err = run_err("fn main() { let arr = [1, 2] print(arr[99]) }");
-        assert!(matches!(err, RuntimeError::IndexOutOfBounds { index: 99, .. }));
+        assert!(matches!(
+            err,
+            RuntimeError::IndexOutOfBounds { index: 99, .. }
+        ));
     }
 
     #[test]

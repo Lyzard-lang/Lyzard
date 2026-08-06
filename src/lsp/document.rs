@@ -195,7 +195,11 @@ mod document_tests {
 
     #[test]
     fn test_new_document_valid_program_no_diagnostics() {
-        let doc = Document::new("file:///t.lyz".to_string(), "fn main() { let x = 1 }".to_string(), 1);
+        let doc = Document::new(
+            "file:///t.lyz".to_string(),
+            "fn main() { let x = 1 }".to_string(),
+            1,
+        );
         assert!(doc.analysis.diagnostics.is_empty());
         assert!(doc.analysis.program.is_some());
     }
@@ -265,7 +269,11 @@ mod document_tests {
     #[test]
     fn test_store_update_reanalyzes_correct_document() {
         let mut store = DocumentStore::new();
-        store.open("file:///a.lyz".to_string(), "let x = undeclared".to_string(), 1);
+        store.open(
+            "file:///a.lyz".to_string(),
+            "let x = undeclared".to_string(),
+            1,
+        );
         store.update("file:///a.lyz", "let x = 42".to_string(), 2);
         let doc = store.get("file:///a.lyz").unwrap();
         assert!(doc.analysis.diagnostics.is_empty());

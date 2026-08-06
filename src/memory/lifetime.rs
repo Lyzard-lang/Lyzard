@@ -3,11 +3,12 @@ use crate::types::ResolvedType;
 
 /// Does this type require reference counting? (i.e. is it heap-allocated?)
 pub fn is_refcounted(ty: &ResolvedType) -> bool {
-    matches!(ty,
-        ResolvedType::Str |
-        ResolvedType::Array(_) |
-        ResolvedType::Struct(_) |
-        ResolvedType::Generic { .. }
+    matches!(
+        ty,
+        ResolvedType::Str
+            | ResolvedType::Array(_)
+            | ResolvedType::Struct(_)
+            | ResolvedType::Generic { .. }
     )
 }
 
@@ -29,12 +30,18 @@ pub struct ScopeLifetimes {
 }
 
 impl ScopeLifetimes {
-    pub fn new() -> Self { Self { vars: Vec::new() } }
+    pub fn new() -> Self {
+        Self { vars: Vec::new() }
+    }
 
     /// Register a new local variable if it needs refcounting
     pub fn track(&mut self, name: String, ty: ResolvedType) {
         if is_refcounted(&ty) {
-            self.vars.push(TrackedVar { name, ty, moved: false });
+            self.vars.push(TrackedVar {
+                name,
+                ty,
+                moved: false,
+            });
         }
     }
 
@@ -60,7 +67,9 @@ pub struct LifetimeTracker {
 
 impl LifetimeTracker {
     pub fn new() -> Self {
-        LifetimeTracker { scopes: vec![ScopeLifetimes::new()] }
+        LifetimeTracker {
+            scopes: vec![ScopeLifetimes::new()],
+        }
     }
 
     pub fn push_scope(&mut self) {
@@ -73,7 +82,10 @@ impl LifetimeTracker {
     }
 
     pub fn track_let(&mut self, name: &str, ty: &ResolvedType) {
-        self.scopes.last_mut().unwrap().track(name.to_string(), ty.clone());
+        self.scopes
+            .last_mut()
+            .unwrap()
+            .track(name.to_string(), ty.clone());
     }
 
     /// Call when compiling a `return expr` where expr is just an identifier —
@@ -130,7 +142,11 @@ impl LifetimeTracker {
     }
 }
 
-impl Default for LifetimeTracker { fn default() -> Self { Self::new() } }
+impl Default for LifetimeTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(test)]
 mod lifetime_tests {
@@ -138,15 +154,27 @@ mod lifetime_tests {
     use crate::types::ResolvedType;
 
     #[test]
-    fn test_is_refcounted_str_true()    { assert!(is_refcounted(&ResolvedType::Str)); }
+    fn test_is_refcounted_str_true() {
+        assert!(is_refcounted(&ResolvedType::Str));
+    }
     #[test]
-    fn test_is_refcounted_array_true()  { assert!(is_refcounted(&ResolvedType::Array(Box::new(ResolvedType::Int)))); }
+    fn test_is_refcounted_array_true() {
+        assert!(is_refcounted(&ResolvedType::Array(Box::new(
+            ResolvedType::Int
+        ))));
+    }
     #[test]
-    fn test_is_refcounted_struct_true() { assert!(is_refcounted(&ResolvedType::Struct("Point".to_string()))); }
+    fn test_is_refcounted_struct_true() {
+        assert!(is_refcounted(&ResolvedType::Struct("Point".to_string())));
+    }
     #[test]
-    fn test_is_refcounted_int_false()   { assert!(!is_refcounted(&ResolvedType::Int)); }
+    fn test_is_refcounted_int_false() {
+        assert!(!is_refcounted(&ResolvedType::Int));
+    }
     #[test]
-    fn test_is_refcounted_bool_false()  { assert!(!is_refcounted(&ResolvedType::Bool)); }
+    fn test_is_refcounted_bool_false() {
+        assert!(!is_refcounted(&ResolvedType::Bool));
+    }
 
     #[test]
     fn test_track_refcounted_var() {
@@ -159,7 +187,11 @@ mod lifetime_tests {
     fn test_track_primitive_not_added() {
         let mut scope = ScopeLifetimes::new();
         scope.track("n".to_string(), ResolvedType::Int);
-        assert_eq!(scope.vars.len(), 0, "Primitives should not be tracked for refcounting");
+        assert_eq!(
+            scope.vars.len(),
+            0,
+            "Primitives should not be tracked for refcounting"
+        );
     }
 
     #[test]
@@ -199,7 +231,7 @@ mod lifetime_tests {
         tracker.mark_returned_identifier("p"); // return happens inside the inner block
         let inner = tracker.pop_scope();
         assert!(inner.vars.is_empty()); // p wasn't declared in the inner scope
-        // p should be marked moved in the OUTER (still-active) scope — verify via drop_order
+                                        // p should be marked moved in the OUTER (still-active) scope — verify via drop_order
     }
 
     #[test]
@@ -214,7 +246,7 @@ mod lifetime_tests {
             if let FnBody::Block(block) = &f.body {
                 let mut tracker = LifetimeTracker::new();
                 tracker.analyze_block(block, &|_expr| ResolvedType::Str); // simplistic resolver for test
-                // Both "a" and "b" resolved as Str by our dummy resolver -> both tracked
+                                                                          // Both "a" and "b" resolved as Str by our dummy resolver -> both tracked
                 assert_eq!(tracker.scopes[0].vars.len(), 2);
             }
         }

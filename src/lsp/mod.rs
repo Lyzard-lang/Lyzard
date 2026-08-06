@@ -1,16 +1,16 @@
-pub mod protocol;
-pub mod document;
-pub mod diagnostics;
-pub mod hover;
 pub mod completion;
 pub mod definition;
+pub mod diagnostics;
+pub mod document;
+pub mod hover;
+pub mod protocol;
 
 use std::io::{BufRead, Write};
 
 use serde_json::{json, Value as Json};
 
-use protocol::{read_message, write_message, RpcResponse, RpcNotification, METHOD_NOT_FOUND};
 use document::DocumentStore;
+use protocol::{read_message, write_message, RpcNotification, RpcResponse, METHOD_NOT_FOUND};
 
 pub struct LanguageServer {
     documents: DocumentStore,
@@ -27,7 +27,11 @@ impl LanguageServer {
 
     /// Main loop: read messages from `reader`, write responses/notifications
     /// to `writer`, until the client sends `exit`.
-    pub fn run<R: BufRead, W: Write>(&mut self, reader: &mut R, writer: &mut W) -> std::io::Result<()> {
+    pub fn run<R: BufRead, W: Write>(
+        &mut self,
+        reader: &mut R,
+        writer: &mut W,
+    ) -> std::io::Result<()> {
         while let Some(message) = read_message(reader)? {
             if message.method == "exit" {
                 break;
@@ -42,7 +46,10 @@ impl LanguageServer {
             // relevant document (this is a NOTIFICATION, sent alongside
             // any request/response above — LSP allows multiple messages
             // per client message when appropriate)
-            if matches!(message.method.as_str(), "textDocument/didOpen" | "textDocument/didChange") {
+            if matches!(
+                message.method.as_str(),
+                "textDocument/didOpen" | "textDocument/didChange"
+            ) {
                 if let Some(notif) = self.build_diagnostics_notification(&message) {
                     write_message(writer, &notif)?;
                 }
@@ -96,9 +103,13 @@ impl LanguageServer {
                 id.map(|id| RpcResponse::success(id, result))
             }
 
-            unknown => id.map(|id| RpcResponse::error(
-                id, METHOD_NOT_FOUND, format!("method not supported: {}", unknown)
-            )),
+            unknown => id.map(|id| {
+                RpcResponse::error(
+                    id,
+                    METHOD_NOT_FOUND,
+                    format!("method not supported: {}", unknown),
+                )
+            }),
         }
     }
 
@@ -121,7 +132,8 @@ impl LanguageServer {
             params["textDocument"]["text"].as_str(),
             params["textDocument"]["version"].as_i64(),
         ) {
-            self.documents.open(uri.to_string(), text.to_string(), version);
+            self.documents
+                .open(uri.to_string(), text.to_string(), version);
         }
     }
 
@@ -142,14 +154,20 @@ impl LanguageServer {
         }
     }
 
-    fn build_diagnostics_notification(&self, message: &protocol::RpcRequest) -> Option<RpcNotification> {
+    fn build_diagnostics_notification(
+        &self,
+        message: &protocol::RpcRequest,
+    ) -> Option<RpcNotification> {
         let uri = message.params["textDocument"]["uri"].as_str()?;
         let doc = self.documents.get(uri)?;
         let diags = diagnostics::to_lsp_diagnostics(&doc.analysis.diagnostics);
-        Some(RpcNotification::new("textDocument/publishDiagnostics", json!({
-            "uri": uri,
-            "diagnostics": diags,
-        })))
+        Some(RpcNotification::new(
+            "textDocument/publishDiagnostics",
+            json!({
+                "uri": uri,
+                "diagnostics": diags,
+            }),
+        ))
     }
 }
 
@@ -211,9 +229,13 @@ mod server_tests {
     #[test]
     fn test_did_open_registers_document() {
         let mut server = LanguageServer::new();
-        let req = make_request(None, "textDocument/didOpen", json!({
-            "textDocument": { "uri": "file:///t.lyz", "text": "fn f() {}", "version": 1 }
-        }));
+        let req = make_request(
+            None,
+            "textDocument/didOpen",
+            json!({
+                "textDocument": { "uri": "file:///t.lyz", "text": "fn f() {}", "version": 1 }
+            }),
+        );
         server.handle_message(&req);
         assert!(server.documents.get("file:///t.lyz").is_some());
     }
@@ -224,10 +246,14 @@ mod server_tests {
         server.handle_message(&make_request(None, "textDocument/didOpen", json!({
             "textDocument": { "uri": "file:///t.lyz", "text": "let x = undeclared", "version": 1 }
         })));
-        server.handle_message(&make_request(None, "textDocument/didChange", json!({
-            "textDocument": { "uri": "file:///t.lyz", "version": 2 },
-            "contentChanges": [{ "text": "let x = 42" }]
-        })));
+        server.handle_message(&make_request(
+            None,
+            "textDocument/didChange",
+            json!({
+                "textDocument": { "uri": "file:///t.lyz", "version": 2 },
+                "contentChanges": [{ "text": "let x = 42" }]
+            }),
+        ));
         let doc = server.documents.get("file:///t.lyz").unwrap();
         assert_eq!(doc.version, 2);
         assert!(doc.analysis.diagnostics.is_empty());
@@ -236,12 +262,20 @@ mod server_tests {
     #[test]
     fn test_did_close_removes_document() {
         let mut server = LanguageServer::new();
-        server.handle_message(&make_request(None, "textDocument/didOpen", json!({
-            "textDocument": { "uri": "file:///t.lyz", "text": "fn f() {}", "version": 1 }
-        })));
-        server.handle_message(&make_request(None, "textDocument/didClose", json!({
-            "textDocument": { "uri": "file:///t.lyz" }
-        })));
+        server.handle_message(&make_request(
+            None,
+            "textDocument/didOpen",
+            json!({
+                "textDocument": { "uri": "file:///t.lyz", "text": "fn f() {}", "version": 1 }
+            }),
+        ));
+        server.handle_message(&make_request(
+            None,
+            "textDocument/didClose",
+            json!({
+                "textDocument": { "uri": "file:///t.lyz" }
+            }),
+        ));
         assert!(server.documents.get("file:///t.lyz").is_none());
     }
 
@@ -251,7 +285,10 @@ mod server_tests {
         let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
         let input = format!(
             "Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}",
-            init.len(), init, exit.len(), exit
+            init.len(),
+            init,
+            exit.len(),
+            exit
         );
         let mut reader = std::io::BufReader::new(input.as_bytes());
         let mut output = Vec::new();

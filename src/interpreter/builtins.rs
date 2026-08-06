@@ -487,11 +487,15 @@ mod slice_builtin_tests {
     #[test]
     fn test_slice_basic() {
         assert_eq!(
-            call("slice", vec![
-                Value::Str("hello world".to_string()),
-                Value::Int(0),
-                Value::Int(5),
-            ]).unwrap(),
+            call(
+                "slice",
+                vec![
+                    Value::Str("hello world".to_string()),
+                    Value::Int(0),
+                    Value::Int(5),
+                ]
+            )
+            .unwrap(),
             Value::Str("hello".to_string())
         );
     }
@@ -499,11 +503,15 @@ mod slice_builtin_tests {
     #[test]
     fn test_slice_mid() {
         assert_eq!(
-            call("slice", vec![
-                Value::Str("hello world".to_string()),
-                Value::Int(6),
-                Value::Int(11),
-            ]).unwrap(),
+            call(
+                "slice",
+                vec![
+                    Value::Str("hello world".to_string()),
+                    Value::Int(6),
+                    Value::Int(11),
+                ]
+            )
+            .unwrap(),
             Value::Str("world".to_string())
         );
     }
@@ -511,11 +519,15 @@ mod slice_builtin_tests {
     #[test]
     fn test_slice_full_range() {
         assert_eq!(
-            call("slice", vec![
-                Value::Str("hello".to_string()),
-                Value::Int(0),
-                Value::Int(5),
-            ]).unwrap(),
+            call(
+                "slice",
+                vec![
+                    Value::Str("hello".to_string()),
+                    Value::Int(0),
+                    Value::Int(5),
+                ]
+            )
+            .unwrap(),
             Value::Str("hello".to_string())
         );
     }
@@ -523,11 +535,15 @@ mod slice_builtin_tests {
     #[test]
     fn test_slice_out_of_bounds_clamped() {
         assert_eq!(
-            call("slice", vec![
-                Value::Str("hello".to_string()),
-                Value::Int(-10),
-                Value::Int(100),
-            ]).unwrap(),
+            call(
+                "slice",
+                vec![
+                    Value::Str("hello".to_string()),
+                    Value::Int(-10),
+                    Value::Int(100),
+                ]
+            )
+            .unwrap(),
             Value::Str("hello".to_string())
         );
     }
@@ -535,21 +551,21 @@ mod slice_builtin_tests {
     #[test]
     fn test_slice_reversed_range_empty() {
         assert_eq!(
-            call("slice", vec![
-                Value::Str("hello".to_string()),
-                Value::Int(3),
-                Value::Int(1),
-            ]).unwrap(),
+            call(
+                "slice",
+                vec![
+                    Value::Str("hello".to_string()),
+                    Value::Int(3),
+                    Value::Int(1),
+                ]
+            )
+            .unwrap(),
             Value::Str("".to_string())
         );
     }
 
     #[test]
     fn test_slice_wrong_type() {
-        assert!(call("slice", vec![
-            Value::Int(5),
-            Value::Int(0),
-            Value::Int(1),
-        ]).is_err());
+        assert!(call("slice", vec![Value::Int(5), Value::Int(0), Value::Int(1),]).is_err());
     }
 }

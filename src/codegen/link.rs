@@ -1,16 +1,20 @@
-use std::process::Command;
-use std::path::Path;
 use crate::interpreter::error::RuntimeError;
+use std::path::Path;
+use std::process::Command;
 
 pub struct LinkOptions {
     pub output_path: String,
-    pub optimize: bool,   // -O2 vs -O0
-    pub keep_ir: bool,    // keep the .ll file for debugging
+    pub optimize: bool, // -O2 vs -O0
+    pub keep_ir: bool,  // keep the .ll file for debugging
 }
 
 impl Default for LinkOptions {
     fn default() -> Self {
-        LinkOptions { output_path: "a.out".to_string(), optimize: true, keep_ir: false }
+        LinkOptions {
+            output_path: "a.out".to_string(),
+            optimize: true,
+            keep_ir: false,
+        }
     }
 }
 

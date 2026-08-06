@@ -1,9 +1,9 @@
 pub mod header;
 pub mod lifetime;
 
-use std::collections::HashMap;
-use crate::types::ResolvedType;
 use crate::parser::ast::StructDecl;
+use crate::types::ResolvedType;
+use std::collections::HashMap;
 
 /// Describes which byte offsets within a struct hold refcounted (heap) pointers.
 /// Generated once per struct definition, embedded as LLVM IR global data,
@@ -23,7 +23,9 @@ pub struct MemoryManager {
 
 impl MemoryManager {
     pub fn new() -> Self {
-        MemoryManager { struct_descriptors: HashMap::new() }
+        MemoryManager {
+            struct_descriptors: HashMap::new(),
+        }
     }
 
     /// Build a descriptor for a struct decl, given each field's resolved type.
@@ -40,11 +42,14 @@ impl MemoryManager {
             offset += 8; // every LYZARD field is 8 bytes (i64, double, or ptr)
         }
 
-        self.struct_descriptors.insert(decl.name.clone(), StructDescriptor {
-            name: decl.name.clone(),
-            refcounted_offsets: offsets,
-            total_size: offset,
-        });
+        self.struct_descriptors.insert(
+            decl.name.clone(),
+            StructDescriptor {
+                name: decl.name.clone(),
+                refcounted_offsets: offsets,
+                total_size: offset,
+            },
+        );
     }
 
     pub fn descriptor_for(&self, struct_name: &str) -> Option<&StructDescriptor> {
@@ -60,12 +65,18 @@ impl MemoryManager {
         let elements: Vec<String> = values.iter().map(|v| format!("i64 {}", v)).collect();
         format!(
             "@desc.{} = global [{} x i64] [{}]",
-            desc.name, values.len(), elements.join(", ")
+            desc.name,
+            values.len(),
+            elements.join(", ")
         )
     }
 }
 
-impl Default for MemoryManager { fn default() -> Self { Self::new() } }
+impl Default for MemoryManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(test)]
 mod descriptor_tests {
@@ -73,18 +84,26 @@ mod descriptor_tests {
     use crate::lexer::Span;
     use crate::parser::ast::*;
 
-    fn dummy_span() -> Span { Span::dummy() }
+    fn dummy_span() -> Span {
+        Span::dummy()
+    }
 
     fn make_struct_decl(name: &str, field_names: &[&str]) -> StructDecl {
         StructDecl {
             name: name.to_string(),
             generics: vec![],
-            fields: field_names.iter().map(|n| StructField {
-                name: n.to_string(),
-                field_type: TypeExpr::Named(NamedType { name: "str".to_string(), span: dummy_span() }),
-                is_pub: false,
-                span: dummy_span(),
-            }).collect(),
+            fields: field_names
+                .iter()
+                .map(|n| StructField {
+                    name: n.to_string(),
+                    field_type: TypeExpr::Named(NamedType {
+                        name: "str".to_string(),
+                        span: dummy_span(),
+                    }),
+                    is_pub: false,
+                    span: dummy_span(),
+                })
+                .collect(),
             is_pub: false,
             span: dummy_span(),
         }
@@ -122,7 +141,10 @@ mod descriptor_tests {
     fn test_total_size_computed() {
         let mut mgr = MemoryManager::new();
         let decl = make_struct_decl("Triple", &["a", "b", "c"]);
-        mgr.register_struct(&decl, &[ResolvedType::Int, ResolvedType::Int, ResolvedType::Int]);
+        mgr.register_struct(
+            &decl,
+            &[ResolvedType::Int, ResolvedType::Int, ResolvedType::Int],
+        );
         let desc = mgr.descriptor_for("Triple").unwrap();
         assert_eq!(desc.total_size, 24); // 3 fields x 8 bytes
     }

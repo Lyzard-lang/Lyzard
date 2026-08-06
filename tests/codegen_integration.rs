@@ -1,12 +1,14 @@
+use lyzard::codegen::CodeGenerator;
 use lyzard::lexer::Lexer;
 use lyzard::parser::Parser;
-use lyzard::codegen::CodeGenerator;
 
 fn generate_ir(src: &str) -> String {
     let t = Lexer::tokenize(src, "i.lyz").unwrap();
     let (prog, errs) = Parser::new(t, "i.lyz", src).parse().unwrap();
     assert!(errs.is_empty(), "Parse errors");
-    CodeGenerator::new().compile(&prog).expect("Codegen should succeed")
+    CodeGenerator::new()
+        .compile(&prog)
+        .expect("Codegen should succeed")
 }
 
 #[test]
@@ -19,10 +21,12 @@ fn test_simple_function_ir_structure() {
 
 #[test]
 fn test_every_function_has_entry_block() {
-    let ir = generate_ir(r#"
+    let ir = generate_ir(
+        r#"
 fn square(x: int) -> int { return x * x }
 fn cube(x: int) -> int { return x * x * x }
-"#);
+"#,
+    );
     let entry_count = ir.matches("entry:").count();
     assert_eq!(entry_count, 2);
 }
@@ -44,12 +48,14 @@ fn test_while_generates_loop_structure() {
 
 #[test]
 fn test_recursive_function_calls_itself() {
-    let ir = generate_ir(r#"
+    let ir = generate_ir(
+        r#"
 fn factorial(n: int) -> int {
     if n <= 1 { return 1 }
     return n
 }
-"#);
+"#,
+    );
     assert!(ir.contains("define i64 @lyz_factorial"));
 }
 
@@ -95,7 +101,8 @@ fn test_slice_runtime_declaration_present() {
 
 #[test]
 fn test_arithmetic_all_ops_present() {
-    let ir = generate_ir(r#"
+    let ir = generate_ir(
+        r#"
 fn ops(a: int, b: int) -> int {
     let s = a + b
     let d = a - b
@@ -103,7 +110,8 @@ fn ops(a: int, b: int) -> int {
     let q = a / b
     return s
 }
-"#);
+"#,
+    );
     assert!(ir.contains("add i64"));
     assert!(ir.contains("sub i64"));
     assert!(ir.contains("mul i64"));
@@ -129,9 +137,11 @@ fn test_ir_is_valid_llvm_if_llc_available() {
 
     match result {
         Ok(output) => {
-            assert!(output.status.success(),
+            assert!(
+                output.status.success(),
                 "LLVM IR validation failed:\n{}",
-                String::from_utf8_lossy(&output.stderr));
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
         Err(_) => {
             eprintln!("llc not installed — skipping IR validation test");

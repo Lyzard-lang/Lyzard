@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-use crate::parser::ast::*;
-use crate::interpreter::value::Value;
-use crate::interpreter::error::RuntimeError;
 use super::opcode::{Chunk, Opcode};
+use crate::interpreter::error::RuntimeError;
+use crate::interpreter::value::Value;
+use crate::parser::ast::*;
+use std::collections::HashMap;
 
 /// Compiler state for one function scope
 #[derive(Debug)]
@@ -15,7 +15,10 @@ struct FnScope {
 
 impl FnScope {
     fn new(name: impl Into<String>) -> Self {
-        FnScope { locals: Vec::new(), chunk: Chunk::new(name) }
+        FnScope {
+            locals: Vec::new(),
+            chunk: Chunk::new(name),
+        }
     }
 
     /// Define a new local variable, return its slot index
@@ -27,7 +30,9 @@ impl FnScope {
 
     /// Look up a local variable by name, return its slot
     fn resolve_local(&self, name: &str) -> Option<usize> {
-        self.locals.iter().rev()
+        self.locals
+            .iter()
+            .rev()
             .find(|(n, _)| n == name)
             .map(|(_, idx)| *idx)
     }
@@ -36,7 +41,9 @@ impl FnScope {
         self.chunk.emit(op, line)
     }
 
-    fn current_pos(&self) -> usize { self.chunk.current_pos() }
+    fn current_pos(&self) -> usize {
+        self.chunk.current_pos()
+    }
 
     fn patch_jump(&mut self, idx: usize, target: usize) {
         self.chunk.patch_jump(idx, target);
@@ -96,7 +103,12 @@ impl Compiler {
     }
 
     fn emit_str(&mut self, s: String, line: usize) -> usize {
-        let idx = self.scopes.last_mut().unwrap().chunk.add_constant(Value::Str(s));
+        let idx = self
+            .scopes
+            .last_mut()
+            .unwrap()
+            .chunk
+            .add_constant(Value::Str(s));
         self.emit(Opcode::PushConst(idx), line)
     }
 
@@ -126,7 +138,7 @@ impl Compiler {
         // Compile body
         match &decl.body {
             FnBody::Block(block) => self.compile_block(block)?,
-            FnBody::Arrow(expr)  => {
+            FnBody::Arrow(expr) => {
                 self.compile_expr(expr)?;
                 self.emit(Opcode::Return, expr.span().line);
             }
@@ -138,8 +150,12 @@ impl Compiler {
 
         // Pop the scope and save the compiled chunk
         let fn_scope = self.scopes.pop().unwrap();
-        let _ = self.scopes.last_mut().unwrap()
-            .chunk.add_constant(Value::Str(format!("<fn:{}>", decl.name)));
+        let _ = self
+            .scopes
+            .last_mut()
+            .unwrap()
+            .chunk
+            .add_constant(Value::Str(format!("<fn:{}>", decl.name)));
         // Store the compiled chunk for later use by the VM
         self.functions.insert(decl.name.clone(), fn_scope.chunk);
         Ok(())
@@ -151,11 +167,11 @@ impl Compiler {
 
     fn compile_declaration(&mut self, decl: &Declaration) -> Result<(), RuntimeError> {
         match decl {
-            Declaration::Let(l)       => self.compile_let(l),
-            Declaration::Const(c)     => self.compile_const(c),
+            Declaration::Let(l) => self.compile_let(l),
+            Declaration::Const(c) => self.compile_const(c),
             Declaration::Statement(s) => self.compile_statement(s),
-            Declaration::Function(_)  => Ok(()), // already compiled in first pass
-            _                         => Ok(()),
+            Declaration::Function(_) => Ok(()), // already compiled in first pass
+            _ => Ok(()),
         }
     }
 
@@ -186,21 +202,21 @@ impl Compiler {
 
     fn compile_statement(&mut self, stmt: &Statement) -> Result<(), RuntimeError> {
         match stmt {
-            Statement::Let(l)        => self.compile_let(l),
-            Statement::Const(c)      => self.compile_const(c),
-            Statement::Return(r)     => self.compile_return(r),
-            Statement::If(i)         => self.compile_if(i),
-            Statement::While(w)      => self.compile_while(w),
-            Statement::For(f)        => self.compile_for(f),
-            Statement::Loop(l)       => self.compile_loop_stmt(l),
-            Statement::Match(m)      => self.compile_match(m),
-            Statement::Block(b)      => self.compile_block(b),
+            Statement::Let(l) => self.compile_let(l),
+            Statement::Const(c) => self.compile_const(c),
+            Statement::Return(r) => self.compile_return(r),
+            Statement::If(i) => self.compile_if(i),
+            Statement::While(w) => self.compile_while(w),
+            Statement::For(f) => self.compile_for(f),
+            Statement::Loop(l) => self.compile_loop_stmt(l),
+            Statement::Match(m) => self.compile_match(m),
+            Statement::Block(b) => self.compile_block(b),
             Statement::Expression(e) => {
                 self.compile_expr(&e.expr)?;
                 self.emit(Opcode::Pop, e.span.line); // discard expression value
                 Ok(())
             }
-            Statement::Break(_)    => {
+            Statement::Break(_) => {
                 // Emit placeholder — compiler needs to patch this later
                 self.emit(Opcode::Jump(usize::MAX), 0);
                 Ok(())
@@ -224,7 +240,9 @@ impl Compiler {
         let line = stmt.span.line;
         match &stmt.value {
             Some(expr) => self.compile_expr(expr)?,
-            None       => { self.emit(Opcode::PushVoid, line); }
+            None => {
+                self.emit(Opcode::PushVoid, line);
+            }
         }
         self.emit(Opcode::Return, line);
         Ok(())
@@ -317,7 +335,7 @@ impl Compiler {
         self.emit(Opcode::LoadLocal(arr_slot), line);
         self.emit(Opcode::Len, line);
         self.emit(Opcode::LoadLocal(idx_slot), line);
-        self.emit(Opcode::Greater, line);  // len > idx → continue
+        self.emit(Opcode::Greater, line); // len > idx → continue
         let exit_jump = self.emit(Opcode::JumpIfFalseAndPop(0), line);
 
         // Load current element: arr[idx]
@@ -368,7 +386,10 @@ impl Compiler {
                     // Always matches — just compile body
                     self.emit(Opcode::Pop, line);
                     match &arm.body {
-                        MatchBody::Expr(e)  => { self.compile_expr(e)?; self.emit(Opcode::Pop, line); }
+                        MatchBody::Expr(e) => {
+                            self.compile_expr(e)?;
+                            self.emit(Opcode::Pop, line);
+                        }
                         MatchBody::Block(b) => self.compile_block(b)?,
                     }
                     break; // wildcard must be last
@@ -383,7 +404,10 @@ impl Compiler {
                     // Match! pop the duped subject, compile body
                     self.emit(Opcode::Pop, line);
                     match &arm.body {
-                        MatchBody::Expr(e)  => { self.compile_expr(e)?; self.emit(Opcode::Pop, line); }
+                        MatchBody::Expr(e) => {
+                            self.compile_expr(e)?;
+                            self.emit(Opcode::Pop, line);
+                        }
                         MatchBody::Block(b) => self.compile_block(b)?,
                     }
                     let end_jump = self.emit(Opcode::Jump(0), line);
@@ -395,7 +419,10 @@ impl Compiler {
                     let slot = self.define_local(b.name.clone());
                     self.emit(Opcode::StoreLocal(slot), line);
                     match &arm.body {
-                        MatchBody::Expr(e)  => { self.compile_expr(e)?; self.emit(Opcode::Pop, line); }
+                        MatchBody::Expr(e) => {
+                            self.compile_expr(e)?;
+                            self.emit(Opcode::Pop, line);
+                        }
                         MatchBody::Block(b) => self.compile_block(b)?,
                     }
                     break; // binding always matches
@@ -415,15 +442,33 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_literal_pattern(&mut self, val: &LiteralValue, line: usize) -> Result<(), RuntimeError> {
+    fn compile_literal_pattern(
+        &mut self,
+        val: &LiteralValue,
+        line: usize,
+    ) -> Result<(), RuntimeError> {
         match val {
-            LiteralValue::Int(n)    => { self.emit(Opcode::PushInt(*n), line); }
-            LiteralValue::Float(f)  => { self.emit(Opcode::PushFloat(*f), line); }
-            LiteralValue::Bool(b)   => { self.emit(Opcode::PushBool(*b), line); }
-            LiteralValue::Str(s)    => { self.emit_str(s.clone(), line); }
-            LiteralValue::Null      => { self.emit(Opcode::PushNull, line); }
-            LiteralValue::Char(c)   => {
-                let idx = self.scopes.last_mut().unwrap().chunk
+            LiteralValue::Int(n) => {
+                self.emit(Opcode::PushInt(*n), line);
+            }
+            LiteralValue::Float(f) => {
+                self.emit(Opcode::PushFloat(*f), line);
+            }
+            LiteralValue::Bool(b) => {
+                self.emit(Opcode::PushBool(*b), line);
+            }
+            LiteralValue::Str(s) => {
+                self.emit_str(s.clone(), line);
+            }
+            LiteralValue::Null => {
+                self.emit(Opcode::PushNull, line);
+            }
+            LiteralValue::Char(c) => {
+                let idx = self
+                    .scopes
+                    .last_mut()
+                    .unwrap()
+                    .chunk
                     .add_constant(Value::Char(*c));
                 self.emit(Opcode::PushConst(idx), line);
             }
@@ -439,11 +484,21 @@ impl Compiler {
         let line = expr.span().line;
 
         match expr {
-            Expr::Int(lit)   => { self.emit(Opcode::PushInt(lit.value), line); }
-            Expr::Float(lit) => { self.emit(Opcode::PushFloat(lit.value), line); }
-            Expr::Str(lit)   => { self.emit_str(lit.value.clone(), line); }
-            Expr::Bool(lit)  => { self.emit(Opcode::PushBool(lit.value), line); }
-            Expr::Null(_)    => { self.emit(Opcode::PushNull, line); }
+            Expr::Int(lit) => {
+                self.emit(Opcode::PushInt(lit.value), line);
+            }
+            Expr::Float(lit) => {
+                self.emit(Opcode::PushFloat(lit.value), line);
+            }
+            Expr::Str(lit) => {
+                self.emit_str(lit.value.clone(), line);
+            }
+            Expr::Bool(lit) => {
+                self.emit(Opcode::PushBool(lit.value), line);
+            }
+            Expr::Null(_) => {
+                self.emit(Opcode::PushNull, line);
+            }
 
             Expr::Identifier(id) => {
                 if let Some(slot) = self.resolve_local(&id.name) {
@@ -457,19 +512,19 @@ impl Compiler {
                 self.compile_expr(&b.left)?;
                 self.compile_expr(&b.right)?;
                 let op = match b.op {
-                    BinaryOp::Add    => Opcode::Add,
-                    BinaryOp::Sub    => Opcode::Sub,
-                    BinaryOp::Mul    => Opcode::Mul,
-                    BinaryOp::Div    => Opcode::Div,
-                    BinaryOp::Mod    => Opcode::Mod,
-                    BinaryOp::Eq     => Opcode::Equal,
-                    BinaryOp::NotEq  => Opcode::NotEqual,
-                    BinaryOp::Lt     => Opcode::Less,
-                    BinaryOp::Lte    => Opcode::LessEqual,
-                    BinaryOp::Gt     => Opcode::Greater,
-                    BinaryOp::Gte    => Opcode::GreaterEqual,
-                    BinaryOp::And    => Opcode::And,
-                    BinaryOp::Or     => Opcode::Or,
+                    BinaryOp::Add => Opcode::Add,
+                    BinaryOp::Sub => Opcode::Sub,
+                    BinaryOp::Mul => Opcode::Mul,
+                    BinaryOp::Div => Opcode::Div,
+                    BinaryOp::Mod => Opcode::Mod,
+                    BinaryOp::Eq => Opcode::Equal,
+                    BinaryOp::NotEq => Opcode::NotEqual,
+                    BinaryOp::Lt => Opcode::Less,
+                    BinaryOp::Lte => Opcode::LessEqual,
+                    BinaryOp::Gt => Opcode::Greater,
+                    BinaryOp::Gte => Opcode::GreaterEqual,
+                    BinaryOp::And => Opcode::And,
+                    BinaryOp::Or => Opcode::Or,
                 };
                 self.emit(op, line);
             }
@@ -576,7 +631,11 @@ impl Compiler {
     }
 }
 
-impl Default for Compiler { fn default() -> Self { Self::new() } }
+impl Default for Compiler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(test)]
 mod compiler_tests {
@@ -607,8 +666,14 @@ mod compiler_tests {
     #[test]
     fn test_compile_string() {
         let chunk = compile_chunk(r#""hello""#);
-        assert!(chunk.code.iter().any(|op| matches!(op, Opcode::PushConst(_))));
-        assert!(chunk.constants.iter().any(|c| matches!(c, Value::Str(s) if s == "hello")));
+        assert!(chunk
+            .code
+            .iter()
+            .any(|op| matches!(op, Opcode::PushConst(_))));
+        assert!(chunk
+            .constants
+            .iter()
+            .any(|c| matches!(c, Value::Str(s) if s == "hello")));
     }
 
     #[test]
@@ -621,16 +686,27 @@ mod compiler_tests {
     #[test]
     fn test_compile_if_has_jump() {
         let chunk = compile_chunk("if true { }");
-        assert!(chunk.code.iter().any(|op| matches!(op, Opcode::JumpIfFalseAndPop(_))));
+        assert!(chunk
+            .code
+            .iter()
+            .any(|op| matches!(op, Opcode::JumpIfFalseAndPop(_))));
     }
 
     #[test]
     fn test_compile_while_has_backward_jump() {
         let chunk = compile_chunk("while false { }");
         // Should have a Jump that goes backward (to loop start)
-        let jumps: Vec<usize> = chunk.code.iter().filter_map(|op| {
-            if let Opcode::Jump(t) = op { Some(*t) } else { None }
-        }).collect();
+        let jumps: Vec<usize> = chunk
+            .code
+            .iter()
+            .filter_map(|op| {
+                if let Opcode::Jump(t) = op {
+                    Some(*t)
+                } else {
+                    None
+                }
+            })
+            .collect();
         // The backward jump should exist (target < some instruction index)
         assert!(!jumps.is_empty());
     }

@@ -34,8 +34,8 @@ pub fn handle_definition(documents: &DocumentStore, params: &Json) -> Json {
     for decl in &program.declarations {
         let (decl_name, decl_span): (&str, Span) = match decl {
             Declaration::Function(f) => (&f.name, f.span),
-            Declaration::Struct(s)   => (&s.name, s.span),
-            Declaration::Enum(e)     => (&e.name, e.span),
+            Declaration::Struct(s) => (&s.name, s.span),
+            Declaration::Enum(e) => (&e.name, e.span),
             _ => continue,
         };
         if decl_name == name {
@@ -83,12 +83,15 @@ fn find_identifier_in_block(block: &Block, line: usize, col: usize) -> Option<St
 
 fn find_identifier_in_expr(expr: &Expr, line: usize, col: usize) -> Option<String> {
     match expr {
-        Expr::Identifier(id) if id.span.line == line && col >= id.span.col && col <= id.span.col + id.name.len() => {
+        Expr::Identifier(id)
+            if id.span.line == line && col >= id.span.col && col <= id.span.col + id.name.len() =>
+        {
             Some(id.name.clone())
         }
         Expr::Call(c) => {
             if let Expr::Identifier(id) = c.callee.as_ref() {
-                if id.span.line == line && col >= id.span.col && col <= id.span.col + id.name.len() {
+                if id.span.line == line && col >= id.span.col && col <= id.span.col + id.name.len()
+                {
                     return Some(id.name.clone());
                 }
             }
@@ -119,7 +122,10 @@ mod completion_definition_tests {
     #[test]
     fn test_completion_includes_user_function() {
         let store = setup("fn myCustomFn() {}");
-        let result = handle_completion(&store, &json!({ "textDocument": { "uri": "file:///t.lyz" } }));
+        let result = handle_completion(
+            &store,
+            &json!({ "textDocument": { "uri": "file:///t.lyz" } }),
+        );
         let items = result["items"].as_array().unwrap();
         assert!(items.iter().any(|i| i["label"] == "myCustomFn"));
     }
@@ -127,7 +133,10 @@ mod completion_definition_tests {
     #[test]
     fn test_completion_includes_struct() {
         let store = setup("struct Point { x: float, y: float }");
-        let result = handle_completion(&store, &json!({ "textDocument": { "uri": "file:///t.lyz" } }));
+        let result = handle_completion(
+            &store,
+            &json!({ "textDocument": { "uri": "file:///t.lyz" } }),
+        );
         let items = result["items"].as_array().unwrap();
         assert!(items.iter().any(|i| i["label"] == "Point"));
     }
@@ -135,7 +144,10 @@ mod completion_definition_tests {
     #[test]
     fn test_completion_includes_builtins() {
         let store = setup("fn f() {}");
-        let result = handle_completion(&store, &json!({ "textDocument": { "uri": "file:///t.lyz" } }));
+        let result = handle_completion(
+            &store,
+            &json!({ "textDocument": { "uri": "file:///t.lyz" } }),
+        );
         let items = result["items"].as_array().unwrap();
         assert!(items.iter().any(|i| i["label"] == "print"));
     }
@@ -143,7 +155,10 @@ mod completion_definition_tests {
     #[test]
     fn test_completion_includes_keywords() {
         let store = setup("fn f() {}");
-        let result = handle_completion(&store, &json!({ "textDocument": { "uri": "file:///t.lyz" } }));
+        let result = handle_completion(
+            &store,
+            &json!({ "textDocument": { "uri": "file:///t.lyz" } }),
+        );
         let items = result["items"].as_array().unwrap();
         assert!(items.iter().any(|i| i["label"] == "match"));
     }
@@ -151,7 +166,10 @@ mod completion_definition_tests {
     #[test]
     fn test_completion_missing_document_empty_list() {
         let store = DocumentStore::new();
-        let result = handle_completion(&store, &json!({ "textDocument": { "uri": "file:///missing.lyz" } }));
+        let result = handle_completion(
+            &store,
+            &json!({ "textDocument": { "uri": "file:///missing.lyz" } }),
+        );
         assert!(result["items"].as_array().unwrap().is_empty());
     }
 
@@ -159,10 +177,13 @@ mod completion_definition_tests {
     fn test_definition_finds_function_declaration() {
         let store = setup("fn compute() -> int { return 1 }\nfn main() { compute() }");
         // "compute()" appears on line 2 (1-indexed), roughly column 13
-        let result = handle_definition(&store, &json!({
-            "textDocument": { "uri": "file:///t.lyz" },
-            "position": { "line": 1, "character": 12 },
-        }));
+        let result = handle_definition(
+            &store,
+            &json!({
+                "textDocument": { "uri": "file:///t.lyz" },
+                "position": { "line": 1, "character": 12 },
+            }),
+        );
         assert_ne!(result, Json::Null);
         assert_eq!(result["uri"], "file:///t.lyz");
     }
@@ -170,20 +191,26 @@ mod completion_definition_tests {
     #[test]
     fn test_definition_missing_document_null() {
         let store = DocumentStore::new();
-        let result = handle_definition(&store, &json!({
-            "textDocument": { "uri": "file:///missing.lyz" },
-            "position": { "line": 0, "character": 0 },
-        }));
+        let result = handle_definition(
+            &store,
+            &json!({
+                "textDocument": { "uri": "file:///missing.lyz" },
+                "position": { "line": 0, "character": 0 },
+            }),
+        );
         assert_eq!(result, Json::Null);
     }
 
     #[test]
     fn test_definition_no_symbol_at_position_null() {
         let store = setup("fn f() {}");
-        let result = handle_definition(&store, &json!({
-            "textDocument": { "uri": "file:///t.lyz" },
-            "position": { "line": 10, "character": 10 },
-        }));
+        let result = handle_definition(
+            &store,
+            &json!({
+                "textDocument": { "uri": "file:///t.lyz" },
+                "position": { "line": 10, "character": 10 },
+            }),
+        );
         assert_eq!(result, Json::Null);
     }
 
@@ -191,10 +218,13 @@ mod completion_definition_tests {
     fn test_definition_finds_struct_declaration() {
         let store = setup("struct Point { x: float, y: float }\nfn main() { let p = Point }");
         // "Point" appears on line 2 (1-indexed), roughly column 21
-        let result = handle_definition(&store, &json!({
-            "textDocument": { "uri": "file:///t.lyz" },
-            "position": { "line": 1, "character": 20 },
-        }));
+        let result = handle_definition(
+            &store,
+            &json!({
+                "textDocument": { "uri": "file:///t.lyz" },
+                "position": { "line": 1, "character": 20 },
+            }),
+        );
         assert_ne!(result, Json::Null);
         assert_eq!(result["uri"], "file:///t.lyz");
     }

@@ -113,8 +113,8 @@ mod cache_tests {
         impl TempDir {
             pub fn new() -> Self {
                 let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-                let path = std::env::temp_dir()
-                    .join(format!("lyzard_test_{}_{}", std::process::id(), id));
+                let path =
+                    std::env::temp_dir().join(format!("lyzard_test_{}_{}", std::process::id(), id));
                 let _ = std::fs::create_dir_all(&path);
                 TempDir(path)
             }
@@ -141,7 +141,11 @@ mod cache_tests {
         let (cache, _dir) = temp_cache();
         let v = Version::new(1, 0, 0);
         cache
-            .store("foo", &v, &[("main.lyz".to_string(), "fn f() {}".to_string())])
+            .store(
+                "foo",
+                &v,
+                &[("main.lyz".to_string(), "fn f() {}".to_string())],
+            )
             .unwrap();
         assert!(cache.is_cached("foo", &v));
     }
@@ -151,7 +155,11 @@ mod cache_tests {
         let (cache, _dir) = temp_cache();
         let v = Version::new(1, 0, 0);
         cache
-            .store("foo", &v, &[("main.lyz".to_string(), "fn f() {}".to_string())])
+            .store(
+                "foo",
+                &v,
+                &[("main.lyz".to_string(), "fn f() {}".to_string())],
+            )
             .unwrap();
         let content = cache.read_file("foo", &v, "main.lyz").unwrap();
         assert_eq!(content, "fn f() {}");
@@ -221,8 +229,12 @@ mod registry_tests {
 
     #[test]
     fn test_fake_registry_download() {
-        let reg = FakeRegistry::new()
-            .publish("json", "1.0.0", vec![], vec![("src/main.lyz", "fn f() {}")]);
+        let reg = FakeRegistry::new().publish(
+            "json",
+            "1.0.0",
+            vec![],
+            vec![("src/main.lyz", "fn f() {}")],
+        );
         let files = reg.download("json", &Version::new(1, 0, 0)).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].0, "src/main.lyz");

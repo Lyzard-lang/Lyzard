@@ -101,19 +101,97 @@ impl TypeEnvironment {
     fn register_builtins(&mut self) {
         use ResolvedType::*;
         let builtins: &[(&str, ResolvedType)] = &[
-            ("print", Function { params: vec![Unknown], return_type: Box::new(Void) }),
-            ("println", Function { params: vec![Unknown], return_type: Box::new(Void) }),
-            ("len", Function { params: vec![Unknown], return_type: Box::new(Int) }),
-            ("parseInt", Function { params: vec![Str], return_type: Box::new(Int) }),
-            ("parseFloat", Function { params: vec![Str], return_type: Box::new(Float) }),
-            ("toString", Function { params: vec![Unknown], return_type: Box::new(Str) }),
-            ("range", Function { params: vec![Int, Int], return_type: Box::new(Array(Box::new(Int))) }),
-            ("assert", Function { params: vec![Bool], return_type: Box::new(Void) }),
-            ("panic", Function { params: vec![Str], return_type: Box::new(Never) }),
-            ("typeOf", Function { params: vec![Unknown], return_type: Box::new(Str) }),
-            ("abs", Function { params: vec![Unknown], return_type: Box::new(Unknown) }),
-            ("min", Function { params: vec![Unknown, Unknown], return_type: Box::new(Unknown) }),
-            ("max", Function { params: vec![Unknown, Unknown], return_type: Box::new(Unknown) }),
+            (
+                "print",
+                Function {
+                    params: vec![Unknown],
+                    return_type: Box::new(Void),
+                },
+            ),
+            (
+                "println",
+                Function {
+                    params: vec![Unknown],
+                    return_type: Box::new(Void),
+                },
+            ),
+            (
+                "len",
+                Function {
+                    params: vec![Unknown],
+                    return_type: Box::new(Int),
+                },
+            ),
+            (
+                "parseInt",
+                Function {
+                    params: vec![Str],
+                    return_type: Box::new(Int),
+                },
+            ),
+            (
+                "parseFloat",
+                Function {
+                    params: vec![Str],
+                    return_type: Box::new(Float),
+                },
+            ),
+            (
+                "toString",
+                Function {
+                    params: vec![Unknown],
+                    return_type: Box::new(Str),
+                },
+            ),
+            (
+                "range",
+                Function {
+                    params: vec![Int, Int],
+                    return_type: Box::new(Array(Box::new(Int))),
+                },
+            ),
+            (
+                "assert",
+                Function {
+                    params: vec![Bool],
+                    return_type: Box::new(Void),
+                },
+            ),
+            (
+                "panic",
+                Function {
+                    params: vec![Str],
+                    return_type: Box::new(Never),
+                },
+            ),
+            (
+                "typeOf",
+                Function {
+                    params: vec![Unknown],
+                    return_type: Box::new(Str),
+                },
+            ),
+            (
+                "abs",
+                Function {
+                    params: vec![Unknown],
+                    return_type: Box::new(Unknown),
+                },
+            ),
+            (
+                "min",
+                Function {
+                    params: vec![Unknown, Unknown],
+                    return_type: Box::new(Unknown),
+                },
+            ),
+            (
+                "max",
+                Function {
+                    params: vec![Unknown, Unknown],
+                    return_type: Box::new(Unknown),
+                },
+            ),
         ];
         for (name, ty) in builtins {
             self.define(name.to_string(), ty.clone());

@@ -562,14 +562,8 @@ impl Parser {
                             break;
                         }
                     }
-                    self.expect_hint(
-                        TokenKind::RightParen,
-                        "Close function type with ')'",
-                    )?;
-                    self.expect_hint(
-                        TokenKind::Arrow,
-                        "Function type needs '-> ret'",
-                    )?;
+                    self.expect_hint(TokenKind::RightParen, "Close function type with ')'")?;
+                    self.expect_hint(TokenKind::Arrow, "Function type needs '-> ret'")?;
                     let return_type = self.parse_type()?;
                     TypeExpr::Fn(params, Box::new(return_type), start.merge(self.prev_span()))
                 }

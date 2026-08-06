@@ -171,7 +171,10 @@ mod lockfile_tests {
     fn test_satisfies_false_when_package_missing() {
         let lock = Lockfile::from_resolved(vec![]);
         let mut reqs = std::collections::HashMap::new();
-        reqs.insert("missing_pkg".to_string(), VersionReq::parse("1.0.0").unwrap());
+        reqs.insert(
+            "missing_pkg".to_string(),
+            VersionReq::parse("1.0.0").unwrap(),
+        );
         assert!(!lock.satisfies(&reqs));
     }
 

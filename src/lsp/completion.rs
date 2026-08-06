@@ -29,14 +29,18 @@ pub fn handle_completion(documents: &DocumentStore, params: &Json) -> Json {
 
     for decl in &program.declarations {
         match decl {
-            Declaration::Function(f) => items.push(json!({ "label": f.name, "kind": KIND_FUNCTION })),
-            Declaration::Struct(s)   => items.push(json!({ "label": s.name, "kind": KIND_STRUCT })),
-            Declaration::Enum(e)     => items.push(json!({ "label": e.name, "kind": KIND_ENUM })),
+            Declaration::Function(f) => {
+                items.push(json!({ "label": f.name, "kind": KIND_FUNCTION }))
+            }
+            Declaration::Struct(s) => items.push(json!({ "label": s.name, "kind": KIND_STRUCT })),
+            Declaration::Enum(e) => items.push(json!({ "label": e.name, "kind": KIND_ENUM })),
             _ => {}
         }
     }
 
-    for kw in ["let", "fn", "if", "else", "while", "for", "return", "match", "struct", "enum"] {
+    for kw in [
+        "let", "fn", "if", "else", "while", "for", "return", "match", "struct", "enum",
+    ] {
         items.push(json!({ "label": kw, "kind": KIND_KEYWORD }));
     }
 

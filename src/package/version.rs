@@ -10,7 +10,11 @@ pub struct Version {
 
 impl Version {
     pub fn new(major: u64, minor: u64, patch: u64) -> Self {
-        Self { major, minor, patch }
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
 
     /// Parse "MAJOR.MINOR.PATCH". Partial versions are allowed: "2.0" means
@@ -115,7 +119,9 @@ impl VersionReq {
         let s = s.trim();
 
         if s == "*" {
-            return Ok(VersionReq { comparators: vec![] }); // empty = matches all
+            return Ok(VersionReq {
+                comparators: vec![],
+            }); // empty = matches all
         }
 
         if let Some(rest) = s.strip_prefix('^') {
@@ -211,10 +217,7 @@ impl VersionReq {
     /// Given a list of available versions, return the HIGHEST one that
     /// satisfies this requirement (the resolver's core operation)
     pub fn best_match<'a>(&self, available: &'a [Version]) -> Option<&'a Version> {
-        available
-            .iter()
-            .filter(|v| self.matches(v))
-            .max()
+        available.iter().filter(|v| self.matches(v)).max()
     }
 }
 
